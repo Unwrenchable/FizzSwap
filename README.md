@@ -1,6 +1,12 @@
-# FizzDex - Universal Multi-Chain DEX 🚀
+# FizzSwap - Universal Multi-Chain DEX 🚀
 
 > A **safe, awesome DEX that can handle ANY blockchain** - built for the Atomic Fizz Caps ecosystem
+
+## 🎯 Ecosystem Integration
+
+FizzSwap is the official DEX for the [ATOMIC-FIZZ-CAPS-VAULT-77-WASTELAND-GPS](https://github.com/Unwrenchable/ATOMIC-FIZZ-CAPS-VAULT-77-WASTELAND-GPS) ecosystem. Trade, earn, and play across any blockchain with full integration support.
+
+📖 See [ECOSYSTEM_INTEGRATION.md](./ECOSYSTEM_INTEGRATION.md) for detailed integration information.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.3-blue.svg)](https://www.typescriptlang.org/)
