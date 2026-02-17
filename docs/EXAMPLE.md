@@ -2,6 +2,7 @@
  * Example: How to use FizzDex with multiple chains
  */
 
+import { ethers } from 'ethers';
 import {
   MultiChainDEX,
   ChainAdapterFactory,
