@@ -61,49 +61,85 @@ const ABI = [
 ];
 
 // in-memory mapping for relayer-created cross-chain HTLCs (evmSwapId -> solana PDAs)
-const relayerMappings: Record<string, { atomicSwapPda: string; escrowVaultPda: string; tokenMint: string; participant: string }> = {};
+const path = require('path');
+const fs = require('fs');
+const MAPPINGS_FILE = path.join(process.cwd(), 'relayer-mappings.json');
+
+type MappingEntry = { atomicSwapPda: string; escrowVaultPda: string; tokenMint: string; participant: string };
+let relayerMappings: Record<string, MappingEntry> = {};
+
+function loadMappings() {
+  try {
+    if (fs.existsSync(MAPPINGS_FILE)) {
+      const raw = fs.readFileSync(MAPPINGS_FILE, 'utf8');
+      relayerMappings = JSON.parse(raw) as Record<string, MappingEntry>;
+      console.log('[Relayer] Loaded', Object.keys(relayerMappings).length, 'mappings');
+    }
+  } catch (err) {
+    console.warn('[Relayer] Failed to load mappings', err);
+  }
+}
+
+function saveMappings() {
+  try {
+    fs.writeFileSync(MAPPINGS_FILE, JSON.stringify(relayerMappings, null, 2), 'utf8');
+  } catch (err) {
+    console.warn('[Relayer] Failed to save mappings', err);
+  }
+}
+
+loadMappings();
 
 app.get("/status", (req, res) => {
   res.json({ running: true, rpc: EVM_RPC, fizzDex: FIZZDEX });
 });
 
 app.post("/start-listen", async (req, res) => {
-  if (!FIZZDEX) return res.status(400).json({ error: "FIZZDEX_ADDRESS not set" });
-  provider = new ethers.JsonRpcProvider(EVM_RPC);
-  contract = new ethers.Contract(FIZZDEX, ABI, provider);
-
-  contract.on("AtomicSwapInitiated", (swapId, initiator, participant, amount) => {
-    console.log("AtomicSwapInitiated", { swapId, initiator, participant, amount: ethers.formatEther(amount) });
-  });
-
-  // Listen for completed swaps and optionally auto-complete mapped Solana HTLCs
-  contract.on("AtomicSwapCompleted", async (swapId, participantAddr, event) => {
-    console.log("AtomicSwapCompleted", { swapId, participantAddr, txHash: event.transactionHash });
-    try {
-      const tx = await provider!.getTransaction(event.transactionHash);
-      if (!tx) return;
-      const iface = new ethers.Interface(["function completeAtomicSwap(bytes32,bytes)"]);
-      const parsed = iface.parseTransaction({ data: tx.data });
-      const secretHex = parsed.args[1];
-      let preimage = '';
-      try { preimage = ethers.toUtf8String(secretHex); } catch { preimage = secretHex; }
-      console.log('Extracted preimage from EVM completion:', preimage);
-
-      const map = relayerMappings[swapId];
-      // Only auto-complete Solana HTLCs when explicitly allowed via env
-      const allowAuto = process.env.RELAYER_ALLOW_AUTOCOMPLETE === 'true';
-      if (map && process.env.RELAYER_SOLANA_KEYPAIR && allowAuto) {
-        console.log('Auto-completing mapped Solana HTLC for swapId', swapId);
-        await completeSolanaHTLC(map.atomicSwapPda, map.escrowVaultPda, map.tokenMint, preimage);
-      } else if (map && !allowAuto) {
-        console.log('Mapped Solana HTLC exists but auto-complete disabled', swapId);
-      }
-    } catch (err: any) {
-      console.warn('Error handling AtomicSwapCompleted:', err?.message || String(err));
+  try {
+    if (!FIZZDEX) return res.status(400).json({ error: "FIZZDEX_ADDRESS not set" });
+    if (provider && contract) {
+      return res.json({ status: "already listening" });
     }
-  });
+    provider = new ethers.JsonRpcProvider(EVM_RPC);
+    contract = new ethers.Contract(FIZZDEX, ABI, provider);
 
-  res.json({ started: true });
+    contract.on("AtomicSwapInitiated", (swapId, initiator, participant, amount) => {
+      console.log("[Relayer] AtomicSwapInitiated", { swapId, initiator, participant, amount: ethers.formatEther(amount) });
+    });
+
+    contract.on("AtomicSwapCompleted", async (swapId, participantAddr, event) => {
+      try {
+        console.log("[Relayer] AtomicSwapCompleted", { swapId, participantAddr, txHash: event.transactionHash });
+        const tx = await provider!.getTransaction(event.transactionHash);
+        if (!tx) return;
+        const iface = new ethers.Interface(["function completeAtomicSwap(bytes32,bytes)"]);
+        const parsed = iface.parseTransaction({ data: tx.data });
+        const secretHex = parsed.args[1];
+        let preimage = '';
+        try { preimage = ethers.toUtf8String(secretHex); } catch { preimage = secretHex; }
+        console.log('[Relayer] Extracted preimage from EVM completion:', preimage);
+
+        const map = relayerMappings[swapId];
+        // Only auto-complete Solana HTLCs when explicitly allowed via env
+        const allowAuto = process.env.RELAYER_ALLOW_AUTOCOMPLETE === 'true';
+          if (map && process.env.RELAYER_SOLANA_KEYPAIR && allowAuto) {
+            console.log('[Relayer] Auto-completing mapped Solana HTLC for swapId', swapId);
+            await completeSolanaHTLC(map.atomicSwapPda, map.escrowVaultPda, map.tokenMint, preimage);
+            // remove mapping after successful completion
+            delete relayerMappings[swapId];
+            saveMappings();
+          } else if (map && !allowAuto) {
+            console.log('[Relayer] Mapped Solana HTLC exists but auto-complete disabled', swapId);
+          }
+      } catch (err: any) {
+        console.warn('[Relayer] Error handling AtomicSwapCompleted:', err?.message || String(err));
+      }
+    });
+    res.json({ status: "listening", fizzDex: FIZZDEX, rpc: EVM_RPC });
+  } catch (err: any) {
+    console.error('[Relayer] Failed to start listener', err);
+    res.status(500).json({ error: err?.message || String(err) });
+  }
 });
 
 // -------------------------
@@ -278,6 +314,7 @@ app.post("/solana/initiate-htlc", async (req, res) => {
     // store mapping if evmSwapId provided so relayer can auto-complete counterpart
     if (evmSwapId) {
       relayerMappings[evmSwapId] = { atomicSwapPda: atomicSwapPda.toBase58(), escrowVaultPda: escrowVaultPda.toBase58(), tokenMint, participant };
+      try { saveMappings(); } catch (e) { console.warn('[Relayer] failed to persist mapping', e); }
     }
 
     return res.json({ success: true, txSig, atomicSwapPda: atomicSwapPda.toBase58(), escrowVaultPda: escrowVaultPda.toBase58() });
@@ -333,6 +370,19 @@ app.post('/solana/complete-htlc', async (req, res) => {
   } catch (err: any) {
     return res.status(500).json({ error: err.message || String(err) });
   }
+});
+
+// mappings inspection endpoints
+app.get('/mappings', (req, res) => {
+  res.json({ count: Object.keys(relayerMappings).length, mappings: relayerMappings });
+});
+
+app.delete('/mappings/:id', (req, res) => {
+  const id = req.params.id;
+  if (!relayerMappings[id]) return res.status(404).json({ error: 'mapping not found' });
+  delete relayerMappings[id];
+  saveMappings();
+  res.json({ success: true });
 });
 
 app.listen(PORT, () => {
