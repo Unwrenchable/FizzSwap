@@ -51,6 +51,6 @@ describe("EvmAdapter (integration)", function () {
     }
 
     const quote = await adapter.getSwapQuote(await tokenA.getAddress(), await tokenB.getAddress(), ethers.parseEther("1").toString());
-    expect(BigInt(quote.outputAmount)).to.be.greaterThan(0n);
+    expect(BigInt(quote.outputAmount) > 0n).to.be.true;
   });
 });

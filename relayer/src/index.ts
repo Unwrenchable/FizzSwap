@@ -72,19 +72,55 @@ function loadMappings() {
   try {
     if (fs.existsSync(MAPPINGS_FILE)) {
       const raw = fs.readFileSync(MAPPINGS_FILE, 'utf8');
-      relayerMappings = JSON.parse(raw) as Record<string, MappingEntry>;
+      const key = process.env.RELAYER_MAPPINGS_KEY;
+      let json = raw;
+      if (key) {
+        try {
+          const crypto = require('crypto');
+          const parts = raw.split(':');
+          if (parts.length === 2) {
+            const iv = Buffer.from(parts[0], 'base64');
+            const encrypted = Buffer.from(parts[1], 'base64');
+            const hash = crypto.createHash('sha256').update(String(key)).digest();
+            const decipher = crypto.createDecipheriv('aes-256-cbc', hash, iv);
+            json = Buffer.concat([decipher.update(encrypted), decipher.final()]).toString('utf8');
+          }
+        } catch (e) {
+            const err = e as any;
+            console.warn('[Relayer] failed to decrypt mappings file, attempting to parse raw content', err?.message || String(err));
+        }
+      }
+      relayerMappings = JSON.parse(json) as Record<string, MappingEntry>;
       console.log('[Relayer] Loaded', Object.keys(relayerMappings).length, 'mappings');
     }
   } catch (err) {
-    console.warn('[Relayer] Failed to load mappings', err);
+      const error = err as any;
+      console.warn('[Relayer] Failed to load mappings', error);
   }
 }
 
 function saveMappings() {
   try {
-    fs.writeFileSync(MAPPINGS_FILE, JSON.stringify(relayerMappings, null, 2), 'utf8');
+    let payload = JSON.stringify(relayerMappings, null, 2);
+    const key = process.env.RELAYER_MAPPINGS_KEY;
+    if (key) {
+      try {
+        const crypto = require('crypto');
+        const iv = crypto.randomBytes(16);
+        const hash = crypto.createHash('sha256').update(String(key)).digest();
+        const cipher = crypto.createCipheriv('aes-256-cbc', hash, iv);
+        const encrypted = Buffer.concat([cipher.update(Buffer.from(payload, 'utf8')), cipher.final()]);
+        payload = `${iv.toString('base64')}:${encrypted.toString('base64')}`;
+      } catch (e) {
+          const ex = e as any;
+          console.warn('[Relayer] Failed to encrypt mappings file, writing plaintext', ex?.message || String(ex));
+      }
+    }
+    fs.writeFileSync(MAPPINGS_FILE, payload, 'utf8');
+    try { fs.chmodSync(MAPPINGS_FILE, 0o600); } catch (e) { /* ignore chmod failures on windows */ }
   } catch (err) {
-    console.warn('[Relayer] Failed to save mappings', err);
+      const error = err as any;
+      console.warn('[Relayer] Failed to save mappings', error);
   }
 }
 
@@ -113,16 +149,19 @@ app.post("/start-listen", async (req, res) => {
         const tx = await provider!.getTransaction(event.transactionHash);
         if (!tx) return;
         const iface = new ethers.Interface(["function completeAtomicSwap(bytes32,bytes)"]);
-        const parsed = iface.parseTransaction({ data: tx.data });
+        let parsed;
+        try { parsed = iface.parseTransaction({ data: tx.data }); } catch { parsed = null; }
+        if (!parsed || !parsed.args) return;
         const secretHex = parsed.args[1];
         let preimage = '';
         try { preimage = ethers.toUtf8String(secretHex); } catch { preimage = secretHex; }
-        console.log('[Relayer] Extracted preimage from EVM completion:', preimage);
+        // Do NOT log secrets/preimages. Log only that a preimage was extracted (redacted).
+        console.log('[Relayer] Extracted preimage for swap (REDACTED)');
 
         const map = relayerMappings[swapId];
         // Only auto-complete Solana HTLCs when explicitly allowed via env
         const allowAuto = process.env.RELAYER_ALLOW_AUTOCOMPLETE === 'true';
-          if (map && process.env.RELAYER_SOLANA_KEYPAIR && allowAuto) {
+            if (map && process.env.RELAYER_SOLANA_KEYPAIR && allowAuto) {
             console.log('[Relayer] Auto-completing mapped Solana HTLC for swapId', swapId);
             await completeSolanaHTLC(map.atomicSwapPda, map.escrowVaultPda, map.tokenMint, preimage);
             // remove mapping after successful completion
@@ -193,7 +232,7 @@ app.post('/aggregate-quote', async (req, res) => {
     }
 
     // pick best by outputAmount
-    results.sort((a, b) => BigInt(b.quote.outputAmount) - BigInt(a.quote.outputAmount));
+    results.sort((a, b) => (BigInt(b.quote.outputAmount) > BigInt(a.quote.outputAmount) ? 1 : -1));
 
     const best = results[0] || null;
     return res.json({ results, best });
@@ -344,10 +383,20 @@ app.post('/solana/complete-htlc', async (req, res) => {
 
 // mappings inspection endpoints
 app.get('/mappings', (req, res) => {
+  // Protect mappings endpoint when RELAYER_API_KEY is configured
+  if (RELAYER_API_KEY) {
+    const key = (req.headers['x-api-key'] as string) || (req.headers['authorization'] as string);
+    if (!key || key !== RELAYER_API_KEY) return res.status(401).json({ error: 'Unauthorized - valid x-api-key required' });
+  }
   res.json({ count: Object.keys(relayerMappings).length, mappings: relayerMappings });
 });
 
 app.delete('/mappings/:id', (req, res) => {
+  // Protect mappings deletion when RELAYER_API_KEY is configured
+  if (RELAYER_API_KEY) {
+    const key = (req.headers['x-api-key'] as string) || (req.headers['authorization'] as string);
+    if (!key || key !== RELAYER_API_KEY) return res.status(401).json({ error: 'Unauthorized - valid x-api-key required' });
+  }
   const id = req.params.id;
   if (!relayerMappings[id]) return res.status(404).json({ error: 'mapping not found' });
   delete relayerMappings[id];

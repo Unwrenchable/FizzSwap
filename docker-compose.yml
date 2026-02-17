@@ -1,0 +1,26 @@
+version: '3.8'
+services:
+  node:
+    image: trufflesuite/ganache:latest
+    ports:
+      - "8545:8545"
+    command: --deterministic --mnemonic "test test test test test test test test test test test junk"
+
+  relayer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SKIP_COMPILE: 'true'
+        SKIP_WEB_BUILD: 'true'
+    ports:
+      - "4001:4001"
+    environment:
+      - RELAYER_PORT=4001
+      - EVM_RPC=http://node:8545
+      - RELAYER_ALLOW_AUTOCOMPLETE=false
+    depends_on:
+      - node
+    volumes:
+      - ./relayer-mappings.json:/app/relayer-mappings.json
+    restart: unless-stopped

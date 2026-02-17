@@ -1,0 +1,12 @@
+node_modules
+dist
+.env
+relayer-mappings.json
+**/node_modules
+**/dist
+.vscode
+.git
+*.log
+npm-debug.log*
+Dockerfile
+.dockerignore

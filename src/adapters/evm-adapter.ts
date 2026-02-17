@@ -227,7 +227,8 @@ export class EvmAdapter implements IChainAdapter {
     try {
       const tx = await this.contract!.initiateAtomicSwap(recipientAddress, token, amount, secretHash, timelock);
       const receipt = await tx.wait();
-      return { hash: tx.hash, success: true, blockNumber: receipt.blockNumber, error: JSON.stringify({ secret, secretHash, timelock }) };
+      // IMPORTANT: Do NOT return plaintext secrets. Return only non-sensitive metadata.
+      return { hash: tx.hash, success: true, blockNumber: receipt.blockNumber, meta: { secretHash, timelock } };
     } catch (err: any) {
       return { hash: '', success: false, error: err?.message || String(err) };
     }

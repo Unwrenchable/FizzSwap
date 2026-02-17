@@ -44,6 +44,8 @@ export interface TransactionResult {
   blockNumber?: number;
   gasUsed?: string;
   error?: string;
+  // Optional metadata for successful operations (do NOT include secrets/plaintext preimages)
+  meta?: any;
 }
 
 /**

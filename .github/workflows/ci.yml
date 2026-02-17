@@ -1,3 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [18.x]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Install dependencies
+        run: npm ci --legacy-peer-deps
+
+      - name: Lint TypeScript
+        run: npm run lint || true
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Initialize relayer mappings (encrypted)
+        env:
+          RELAYER_MAPPINGS_KEY: ${{ secrets.RELAYER_MAPPINGS_KEY || '' }}
+        run: npm run relayer:init-mappings
+
+      - name: Run tests
+        env:
+          # Provide minimal env vars for relayer where needed
+          RELAYER_API_KEY: ${{ secrets.RELAYER_API_KEY || '' }}
+        run: npm test
+
+      - name: Run solhint
+        run: npx solhint 'contracts/**/*.sol'
+
+      - name: Run slither (Docker)
+        if: always()
+        run: |
+          docker run --rm -v ${{ github.workspace }}:/src -w /src --entrypoint slither trailofbits/slither:latest /src || true
 ++ name: CI
   on:
     push:

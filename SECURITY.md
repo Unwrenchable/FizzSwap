@@ -1,3 +1,49 @@
+## Security: Secrets and Token Handling
+
+This file documents recommended practices for handling secrets (API keys, private keys, tokens) used by this repository.
+
+Immediate actions if a secret was exposed
+- Revoke the leaked credential immediately (e.g., Docker Hub Access Token, cloud keys).
+- Create a new credential with minimal scope and rotate any dependent systems.
+- Audit recent activity (registry pushes, CI runs) for suspicious actions.
+
+Safe secret management
+- Never paste secrets or private keys into chat, issue trackers, or commit history.
+- Store runtime secrets outside the repository using:
+  - GitHub Actions Secrets for CI (`Settings → Secrets & variables → Actions`).
+  - Cloud secret managers (AWS Secrets Manager, GCP Secret Manager, Azure Key Vault) for production.
+  - Environment files (`.env`) only for local development; never commit `.env` into git.
+
+CI & Docker
+- Use the repository `Secrets` to store tokens used by Actions (e.g., `DOCKERHUB_TOKEN`).
+- In CI, avoid echoing secrets to logs. Use official actions that accept secrets via inputs.
+- When logging into registries from CI, use stdin login:
+  ```bash
+  echo "$DOCKERHUB_TOKEN" | docker login --username "$DOCKERHUB_USERNAME" --password-stdin
+  ```
+
+Local usage
+- Authenticate locally via `docker login --password-stdin` and avoid placing tokens in shell history.
+- Use `gh secret set NAME --body "$(cat /path/to/secret)"` locally to upload secrets to GitHub without exposing them.
+
+Encryption & persisted files
+- `relayer-mappings.json` may contain mappings used by the relayer. Protect it:
+  - Prefer running the relayer in a container with a mounted volume not checked into git.
+  - Set `RELAYER_MAPPINGS_KEY` to enable on-disk AES-256-CBC encryption (the relayer supports this).
+  - Keep file permissions restricted (the relayer will attempt `chmod 600`).
+
+Rotation & least privilege
+- Use short-lived credentials when possible and rotate tokens regularly (30–90 days depending on risk).
+- Grant minimal privileges required for CI or runtime tasks (scoped tokens, limited write access).
+
+Responding to leaks
+1. Revoke the compromised credential immediately.
+2. Rotate the credential and update secrets in CI and deployments.
+3. Search repository history for accidental commits and remove sensitive files (use `git filter-repo` or `bfg`), then rotate again.
+4. Check CI logs and registry activity for unauthorized actions; take remediation steps if needed.
+
+Contact
+- If you'd like, I can add automated scripts to rotate and update secrets in GitHub via the `gh` CLI, or add a short `SECURITY.md` link in the repo README. Tell me which you'd prefer.
 # Security Policy
 
 ## 🔒 Security Features

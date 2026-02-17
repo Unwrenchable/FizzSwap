@@ -1,4 +1,7 @@
+/.env
+relayer-mappings.json
 node_modules/
+dist/node_modules/
 dist/
 build/
 *.log

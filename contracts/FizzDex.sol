@@ -68,7 +68,8 @@ contract FizzDex is ReentrancyGuard, Ownable {
     event AtomicSwapCompleted(bytes32 indexed swapId, address indexed participant);
     event AtomicSwapRefunded(bytes32 indexed swapId, address indexed initiator);
     
-    constructor(address _rewardToken) Ownable(msg.sender) {
+    constructor(address _rewardToken) {
+        // Ownable's constructor sets owner to deployer (msg.sender). No explicit base args needed.
         rewardToken = _rewardToken;
     }
     

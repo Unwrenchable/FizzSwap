@@ -1,0 +1,67 @@
+name: Build and publish Docker image
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      full_build:
+        description: 'Run full build (compile contracts and web). Default false'
+        required: false
+        default: 'false'
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push to GHCR
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/fizzdex:latest
+            ghcr.io/${{ github.repository_owner }}/fizzdex:${{ github.sha }}
+          build-args: |
+            SKIP_COMPILE=${{ github.event.inputs.full_build == 'true' && 'false' || 'true' }}
+            SKIP_WEB_BUILD=${{ github.event.inputs.full_build == 'true' && 'false' || 'true' }}
+
+      - name: Login to Docker Hub (optional)
+        if: secrets.DOCKERHUB_USERNAME && secrets.DOCKERHUB_TOKEN
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push to Docker Hub (optional)
+        if: secrets.DOCKERHUB_USERNAME && secrets.DOCKERHUB_TOKEN
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/fizzdex:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/fizzdex:${{ github.sha }}
+          build-args: |
+            SKIP_COMPILE=${{ github.event.inputs.full_build == 'true' && 'false' || 'true' }}
+            SKIP_WEB_BUILD=${{ github.event.inputs.full_build == 'true' && 'false' || 'true' }}

@@ -38,6 +38,6 @@ describe("SolanaAdapter (basic)", function () {
     await adapter.connect();
     const quote = await adapter.getSwapQuote('TOKEN_A', 'TOKEN_B', '1000000000000000000');
     expect(quote).to.have.property('outputAmount');
-    expect(BigInt(quote.outputAmount)).to.be.greaterThan(0n);
+    expect(BigInt(quote.outputAmount) > 0n).to.be.true;
   });
 });

@@ -15,21 +15,22 @@ contract FeeOnTransferToken is ERC20 {
         _mint(msg.sender, initialSupply);
     }
 
-    function _update(address from, address to, uint256 value) internal override {
+    // Use OpenZeppelin-compatible hook by overriding `_transfer`.
+    function _transfer(address from, address to, uint256 amount) internal virtual override {
         // preserve mint/burn behavior
         if (from == address(0) || to == address(0) || feeBasisPoints == 0 || from == feeReceiver || to == feeReceiver) {
-            super._update(from, to, value);
+            super._transfer(from, to, amount);
             return;
         }
 
-        uint256 fee = (value * feeBasisPoints) / 10000;
-        uint256 sendAmount = value - fee;
+        uint256 fee = (amount * feeBasisPoints) / 10000;
+        uint256 sendAmount = amount - fee;
 
         // transfer net amount
-        super._update(from, to, sendAmount);
+        super._transfer(from, to, sendAmount);
         // transfer fee portion to feeReceiver
         if (fee > 0) {
-            super._update(from, feeReceiver, fee);
+            super._transfer(from, feeReceiver, fee);
         }
     }
 }
