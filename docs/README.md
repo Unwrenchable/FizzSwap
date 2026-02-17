@@ -1,3 +1,14 @@
+# FizzSwap Documentation
+
+## Deployment
+## Security hardening (recommended)
+
+- Do not keep raw private keys in plaintext in production. Use a secrets manager (Vault, AWS KMS/Secrets Manager, GitHub Secrets for CI).
+- Set `RELAYER_API_KEY` to a strong value; the relayer enforces `x-api-key` on POST endpoints when configured.
+- Enable `RELAYER_ALLOW_AUTOCOMPLETE=true` only for trusted relayers; auto-complete of HTLCs is disabled by default.
+- Use `RELAYER_RATE_LIMIT` to limit request volume; default is 60 requests/min per IP.
+- Run `npm audit` regularly and address high-severity findings before deploying.
+- Consider adding Slither or MythX for Solidity static analysis before production deployments.
 # FizzDex - Universal Multi-Chain DEX
 
 ## Overview

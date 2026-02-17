@@ -1,0 +1,26 @@
+:root{--bg:#07190b;--card:#0e1206;--accent:#f3c84b;--accent-2:#7bb26b;--muted:#b8b091;--text:#f7f3e6;--danger:#ff6b6b}
+body{margin:0;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,monospace,'Courier New',monospace;background:radial-gradient(circle at 10% 10%, #162108 0%, #07120a 40%, #020301 100%);color:var(--text);min-height:100vh}
+header h1{font-family:ui-monospace,Menlo,monospace;font-weight:700;letter-spacing:1px;color:var(--accent);display:flex;gap:10px;align-items:center}
+.header-row div{color:var(--muted)}
+.card{background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));padding:18px;border-radius:10px;margin-top:18px;border:1px solid rgba(243,200,75,0.08);box-shadow:0 6px 30px rgba(0,0,0,0.6) inset}
+button{background:linear-gradient(180deg,var(--accent),#d0a93a);color:#111;padding:8px 12px;border-radius:8px;border:1px solid rgba(0,0,0,0.2);cursor:pointer;box-shadow:0 6px 18px rgba(0,0,0,0.6)}
+button:hover{transform:translateY(-1px);box-shadow:0 8px 20px rgba(0,0,0,0.7),0 0 8px rgba(243,200,75,0.08)}
+input,textarea{background:transparent;border:1px dashed rgba(255,255,255,0.04);padding:8px;border-radius:6px;color:var(--text)}
+.log{font-family:monospace;font-size:13px;padding:6px;border-bottom:1px dashed rgba(255,255,255,0.02);background:linear-gradient(90deg, rgba(255,255,255,0.01), rgba(255,255,255,0.00))}
+.small-muted{color:var(--muted);font-size:12px}
+.container{max-width:980px;margin:28px auto;padding:20px}
+header{display:flex;justify-content:space-between;align-items:center}
+.header-row{display:flex;gap:12px;align-items:center}
+.card{background:rgba(255,255,255,0.03);padding:16px;border-radius:10px;margin-top:18px}
+label{display:block;margin-top:8px;color:var(--muted);font-size:13px}
+input{width:100%;padding:8px;border-radius:6px;border:1px solid rgba(255,255,255,0.04);background:transparent;color:var(--text);margin-top:6px}
+.buttons{display:flex;gap:8px;margin-top:12px}
+button{background:var(--accent);color:white;padding:8px 12px;border-radius:8px;border:0;cursor:pointer}
+.logs{max-height:240px;overflow:auto;border-radius:6px;padding:8px;background:rgba(255,255,255,0.01)}
+.log{font-family:monospace;font-size:13px;padding:6px;border-bottom:1px dashed rgba(255,255,255,0.02)}
+footer{margin-top:20px;color:var(--muted)}
+
+.spinner{display:inline-block;width:16px;height:16px;border-radius:50%;border:2px solid rgba(0,0,0,0.2);border-top-color:var(--accent);animation:spin 900ms linear infinite;margin-left:8px}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+.exec-result{margin-top:12px;padding:10px;border-radius:8px;background:rgba(0,0,0,0.3);font-family:monospace}

@@ -156,6 +156,13 @@ export class ChainAdapterFactory {
   }
 }
 
+// Register built-in adapters (EVM + Solana)
+import { EvmAdapter } from "./adapters/evm-adapter";
+import { SolanaAdapter } from "./adapters/solana-adapter";
+ChainAdapterFactory.registerAdapter('evm', EvmAdapter);
+ChainAdapterFactory.registerAdapter('solana', SolanaAdapter);
+ 
+
 /**
  * Multi-chain DEX Manager
  * Manages operations across multiple chains

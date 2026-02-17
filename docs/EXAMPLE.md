@@ -191,3 +191,18 @@ main()
     console.error('Error:', error);
     process.exit(1);
   });
+
+// -------------------------
+// Cross-chain HTLC (example instructions)
+// -------------------------
+// HTLC flow (recommended, trustless):
+// 1) Maker (Alice) chooses `secret` and computes `secretHash = keccak256(secret)`
+// 2) Alice calls `initiateAtomicSwap` on EVM FizzDex with `secretHash` and `timelock` (UI supports this)
+// 3) Counterparty (Bob) observes the EVM swap (UI/relayer) and calls `initiate_atomic_swap` on Solana using the same `secretHash` and `timelock` — UI supports Phantom-signed Solana HTLCs or the relayer can create the HTLC for demos
+// 4) Alice redeems on Solana by calling `complete_atomic_swap(secret)` via the UI (Phantom) — secret becomes public on-chain
+// 5) Bob reads the revealed `secret` and calls `completeAtomicSwap` on the EVM `FizzDex` to claim funds (the UI can fetch the preimage from the redeem tx)
+// 6) If timelock expires, either side can call `refundAtomicSwap` / `refund_atomic_swap`
+
+// The web UI includes direct Phantom signing for Solana HTLC creation and completion (preferred). The UI also provides a "fetch secret from tx" helper for EVM to extract a revealed preimage from a transaction and use it to complete the counterparty HTLC.
+
+

@@ -110,7 +110,7 @@ Integrated with the Atomic Fizz Caps ecosystem:
 
 ## 🌉 Cross-Chain Support
 
-- Atomic swaps via HTLC (Hash Time-Locked Contracts)
+- Atomic swaps via HTLC (Hash Time-Locked Contracts) — recommended: use the provided UI/relayer for cross-chain coordination
 - Wormhole bridge integration
 - LayerZero messaging (coming soon)
 - Unified liquidity across chains
