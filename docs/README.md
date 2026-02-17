@@ -260,7 +260,7 @@ FizzDex is designed to be **part of the Atomic Fizz Caps Vault 77 ecosystem**:
 ## 🛡️ Security Best Practices
 
 ### For Users
-1. **Always set appropriate slippage**: Use `SecurityUtils.calculateSafeSlippage())`
+1. **Always set appropriate slippage**: Use `SecurityUtils.calculateSafeSlippage()`
 2. **Verify addresses**: Double-check token addresses before trading
 3. **Start small**: Test with small amounts first
 4. **Check quotes**: Review swap quotes before executing
