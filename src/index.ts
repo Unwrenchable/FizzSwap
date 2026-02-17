@@ -11,7 +11,7 @@
 export * from './chain-adapter';
 
 // Chain adapters
-export { EVMAdapter } from './adapters/evm-adapter';
+// export { EVMAdapter } from './adapters/evm-adapter';  // To be implemented
 // export { SolanaAdapter } from './adapters/solana-adapter';  // To be implemented
 // export { XRPAdapter } from './adapters/xrp-adapter';  // To be implemented
 
