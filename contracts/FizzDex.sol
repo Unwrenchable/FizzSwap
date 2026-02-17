@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 
@@ -11,6 +12,7 @@ import "@openzeppelin/contracts/access/Ownable.sol";
  * Supports atomic swaps and cross-chain bridging
  */
 contract FizzDex is ReentrancyGuard, Ownable {
+    using SafeERC20 for IERC20;
     
     // DEX State
     struct LiquidityPool {
@@ -81,7 +83,7 @@ contract FizzDex is ReentrancyGuard, Ownable {
     }
     
     /**
-     * @dev Add liquidity to a pool
+     * @dev Add liquidity to a pool. Supports fee-on-transfer tokens and accepts tokens in any order.
      */
     function addLiquidity(
         address tokenA,
@@ -90,38 +92,55 @@ contract FizzDex is ReentrancyGuard, Ownable {
         uint256 amountB
     ) external nonReentrant returns (uint256 shares) {
         require(amountA > 0 && amountB > 0, "Invalid amounts");
-        
+        require(tokenA != tokenB, "Identical tokens");
+
+        // canonical token ordering
+        address token0 = tokenA < tokenB ? tokenA : tokenB;
+        address token1 = tokenA < tokenB ? tokenB : tokenA;
+        uint256 amount0 = tokenA == token0 ? amountA : amountB;
+        uint256 amount1 = tokenA == token0 ? amountB : amountA;
+
         bytes32 poolId = getPoolId(tokenA, tokenB);
         LiquidityPool storage pool = pools[poolId];
-        
+
         // Initialize pool if needed
         if (pool.tokenA == address(0)) {
-            pool.tokenA = tokenA < tokenB ? tokenA : tokenB;
-            pool.tokenB = tokenA < tokenB ? tokenB : tokenA;
+            pool.tokenA = token0;
+            pool.tokenB = token1;
         }
-        
-        // Transfer tokens
-        IERC20(tokenA).transferFrom(msg.sender, address(this), amountA);
-        IERC20(tokenB).transferFrom(msg.sender, address(this), amountB);
-        
-        // Calculate shares
+
+        // Read balances before transfer to support fee-on-transfer tokens
+        uint256 balance0Before = IERC20(token0).balanceOf(address(this));
+        uint256 balance1Before = IERC20(token1).balanceOf(address(this));
+
+        // Transfer tokens using SafeERC20
+        IERC20(token0).safeTransferFrom(msg.sender, address(this), amount0);
+        IERC20(token1).safeTransferFrom(msg.sender, address(this), amount1);
+
+        // Actual received amounts (handles tokens that take fees on transfer)
+        uint256 added0 = IERC20(token0).balanceOf(address(this)) - balance0Before;
+        uint256 added1 = IERC20(token1).balanceOf(address(this)) - balance1Before;
+
+        require(added0 > 0 && added1 > 0, "No tokens received");
+
+        // Calculate shares based on actual received
         if (pool.totalShares == 0) {
-            shares = sqrt(amountA * amountB);
+            shares = sqrt(added0 * added1);
         } else {
             shares = min(
-                (amountA * pool.totalShares) / pool.reserveA,
-                (amountB * pool.totalShares) / pool.reserveB
+                (added0 * pool.totalShares) / pool.reserveA,
+                (added1 * pool.totalShares) / pool.reserveB
             );
         }
-        
+
         require(shares > 0, "Insufficient liquidity minted");
-        
-        pool.reserveA += amountA;
-        pool.reserveB += amountB;
+
+        pool.reserveA += added0;
+        pool.reserveB += added1;
         pool.totalShares += shares;
         pool.shares[msg.sender] += shares;
-        
-        emit LiquidityAdded(poolId, msg.sender, amountA, amountB, shares);
+
+        emit LiquidityAdded(poolId, msg.sender, added0, added1, shares);
     }
     
     /**
@@ -134,20 +153,21 @@ contract FizzDex is ReentrancyGuard, Ownable {
     ) external nonReentrant returns (uint256 amountA, uint256 amountB) {
         bytes32 poolId = getPoolId(tokenA, tokenB);
         LiquidityPool storage pool = pools[poolId];
-        
+
         require(pool.shares[msg.sender] >= shares, "Insufficient shares");
-        
+
         amountA = (shares * pool.reserveA) / pool.totalShares;
         amountB = (shares * pool.reserveB) / pool.totalShares;
-        
+
         pool.shares[msg.sender] -= shares;
         pool.totalShares -= shares;
         pool.reserveA -= amountA;
         pool.reserveB -= amountB;
-        
-        IERC20(pool.tokenA).transfer(msg.sender, amountA);
-        IERC20(pool.tokenB).transfer(msg.sender, amountB);
-        
+
+        // Use SafeERC20 for outgoing transfers
+        IERC20(pool.tokenA).safeTransfer(msg.sender, amountA);
+        IERC20(pool.tokenB).safeTransfer(msg.sender, amountB);
+
         emit LiquidityRemoved(poolId, msg.sender, amountA, amountB, shares);
     }
     
@@ -161,37 +181,42 @@ contract FizzDex is ReentrancyGuard, Ownable {
         uint256 minAmountOut
     ) external nonReentrant returns (uint256 amountOut) {
         require(amountIn > 0, "Invalid input amount");
-        
+        require(tokenIn != tokenOut, "Identical tokens");
+
         bytes32 poolId = getPoolId(tokenIn, tokenOut);
         LiquidityPool storage pool = pools[poolId];
-        
+
         require(pool.reserveA > 0 && pool.reserveB > 0, "Pool not initialized");
-        
-        // Calculate output amount (with 0.3% fee)
+
         bool isTokenA = tokenIn == pool.tokenA;
         uint256 reserveIn = isTokenA ? pool.reserveA : pool.reserveB;
         uint256 reserveOut = isTokenA ? pool.reserveB : pool.reserveA;
-        
-        uint256 amountInWithFee = amountIn * 997;
+
+        // Pull tokens first and compute actual received (supports fee-on-transfer tokens)
+        uint256 balanceBefore = IERC20(tokenIn).balanceOf(address(this));
+        IERC20(tokenIn).safeTransferFrom(msg.sender, address(this), amountIn);
+        uint256 actualAmountIn = IERC20(tokenIn).balanceOf(address(this)) - balanceBefore;
+        require(actualAmountIn > 0, "No input tokens received");
+
+        uint256 amountInWithFee = actualAmountIn * 997;
         amountOut = (amountInWithFee * reserveOut) / (reserveIn * 1000 + amountInWithFee);
-        
+
         require(amountOut >= minAmountOut, "Slippage too high");
         require(amountOut < reserveOut, "Insufficient liquidity");
-        
-        // Update reserves
+
+        // Update reserves with actual amounts
         if (isTokenA) {
-            pool.reserveA += amountIn;
+            pool.reserveA += actualAmountIn;
             pool.reserveB -= amountOut;
         } else {
-            pool.reserveB += amountIn;
+            pool.reserveB += actualAmountIn;
             pool.reserveA -= amountOut;
         }
-        
-        // Transfer tokens
-        IERC20(tokenIn).transferFrom(msg.sender, address(this), amountIn);
-        IERC20(tokenOut).transfer(msg.sender, amountOut);
-        
-        emit Swap(poolId, msg.sender, tokenIn, tokenOut, amountIn, amountOut);
+
+        // Send output token
+        IERC20(tokenOut).safeTransfer(msg.sender, amountOut);
+
+        emit Swap(poolId, msg.sender, tokenIn, tokenOut, actualAmountIn, amountOut);
     }
     
     // Fizz Caps Game Functions
@@ -241,11 +266,11 @@ contract FizzDex is ReentrancyGuard, Ownable {
     function claimRewards() external nonReentrant {
         Player storage player = players[msg.sender];
         uint256 amount = player.rewardBalance;
-        
+
         require(amount > 0, "No rewards to claim");
-        
+
         player.rewardBalance = 0;
-        IERC20(rewardToken).transfer(msg.sender, amount);
+        IERC20(rewardToken).safeTransfer(msg.sender, amount);
     }
     
     /**
@@ -283,45 +308,50 @@ contract FizzDex is ReentrancyGuard, Ownable {
         require(timelock > block.timestamp, "Invalid timelock");
         require(amount > 0, "Invalid amount");
         
+        // transfer and record actual received (protect against fee-on-transfer tokens)
+        uint256 balanceBefore = IERC20(token).balanceOf(address(this));
+        IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
+        uint256 actualReceived = IERC20(token).balanceOf(address(this)) - balanceBefore;
+        require(actualReceived > 0, "No tokens received");
+
+        // compute swapId using the actual received amount
         swapId = keccak256(abi.encodePacked(
             msg.sender,
             participant,
             token,
-            amount,
+            actualReceived,
             secretHash,
             timelock
         ));
-        
+
         require(atomicSwaps[swapId].initiator == address(0), "Swap already exists");
-        
+
         AtomicSwap storage swap = atomicSwaps[swapId];
         swap.initiator = msg.sender;
         swap.participant = participant;
         swap.token = token;
-        swap.amount = amount;
+        swap.amount = actualReceived;
         swap.secretHash = secretHash;
         swap.timelock = timelock;
-        
-        IERC20(token).transferFrom(msg.sender, address(this), amount);
-        
-        emit AtomicSwapInitiated(swapId, msg.sender, participant, amount);
+
+        emit AtomicSwapInitiated(swapId, msg.sender, participant, actualReceived);
     }
     
     /**
      * @dev Complete an atomic swap by revealing the secret
      */
-    function completeAtomicSwap(bytes32 swapId, bytes32 secret) external nonReentrant {
+    function completeAtomicSwap(bytes32 swapId, bytes calldata secret) external nonReentrant {
         AtomicSwap storage swap = atomicSwaps[swapId];
         
         require(swap.participant == msg.sender, "Not the participant");
         require(!swap.completed, "Already completed");
         require(!swap.refunded, "Already refunded");
         require(block.timestamp <= swap.timelock, "Swap expired");
-        require(keccak256(abi.encodePacked(secret)) == swap.secretHash, "Invalid secret");
+        require(keccak256(secret) == swap.secretHash, "Invalid secret");
         
         swap.completed = true;
-        IERC20(swap.token).transfer(swap.participant, swap.amount);
-        
+        IERC20(swap.token).safeTransfer(swap.participant, swap.amount);
+
         emit AtomicSwapCompleted(swapId, msg.sender);
     }
     
@@ -337,8 +367,8 @@ contract FizzDex is ReentrancyGuard, Ownable {
         require(block.timestamp > swap.timelock, "Timelock not expired");
         
         swap.refunded = true;
-        IERC20(swap.token).transfer(swap.initiator, swap.amount);
-        
+        IERC20(swap.token).safeTransfer(swap.initiator, swap.amount);
+
         emit AtomicSwapRefunded(swapId, msg.sender);
     }
     
@@ -365,6 +395,6 @@ contract FizzDex is ReentrancyGuard, Ownable {
      * @dev Fund the contract with reward tokens
      */
     function fundRewards(uint256 amount) external onlyOwner {
-        IERC20(rewardToken).transferFrom(msg.sender, address(this), amount);
+        IERC20(rewardToken).safeTransferFrom(msg.sender, address(this), amount);
     }
 }

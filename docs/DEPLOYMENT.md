@@ -191,6 +191,27 @@ networks: {
 
 ## Testing Deployment
 
+### Relayer (optional) and Solana HTLC
+
+The repository includes a minimal relayer you can run to monitor EVM swaps and optionally create Solana HTLCs on behalf of a payer (useful for demos). **This relayer is optional** — prefer direct wallet-signed Solana transactions in production.
+
+Start the relayer:
+
+```bash
+cd relayer
+npm install
+# Provide keys via env. RELAYER_SOLANA_KEYPAIR must be a JSON array of 64 secret bytes for a funded keypair.
+RELAYER_PRIVATE_KEY="0x..." RELAYER_SOLANA_KEYPAIR='[1,2,3,...]' EVM_RPC="http://127.0.0.1:8545" FIZZDEX_ADDRESS="0x..." npm run start
+```
+
+Relayer endpoints (examples):
+- POST /start-listen — watch EVM `AtomicSwapInitiated`
+- POST /submit-secret { swapId, secret } — submit revealed secret to EVM
+- POST /solana/initiate-htlc { participant, tokenMint, amount, secretHash, timelock } — create Solana HTLC (signed by relayer keypair)
+
+**Security note:** when RELAYER_SOLANA_KEYPAIR is configured the relayer becomes an on‑chain signer for Solana transactions — keep it private and use it only for testing or trusted automation. For full trustless UX, the UI supports Phantom and will be extended to let users sign directly with their wallets.
+
+
 ### 1. Run Integration Tests
 
 ```bash

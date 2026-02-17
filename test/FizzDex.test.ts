@@ -1,6 +1,6 @@
 import { expect } from "chai";
 import { ethers } from "hardhat";
-import { FizzDex, FizzToken } from "../typechain-types";
+import { FizzDex, FizzToken, FeeOnTransferToken } from "../typechain-types";
 import { SignerWithAddress } from "@nomicfoundation/hardhat-ethers/signers";
 
 describe("FizzDex", function () {
@@ -107,6 +107,78 @@ describe("FizzDex", function () {
         )
       ).to.be.revertedWith("Slippage too high");
     });
+
+    it("Should support fee-on-transfer tokens for swaps and liquidity", async function () {
+      // Deploy a fee-on-transfer token (1% fee)
+      const FeeFactory = await ethers.getContractFactory("FeeOnTransferToken");
+      const feeToken = await FeeFactory.deploy(ethers.parseEther("1000000"), 100, owner.address);
+
+      // Give user1 some fee tokens
+      await feeToken.transfer(user1.address, ethers.parseEther("10000"));
+
+      // Approve and add liquidity where tokenA is fee-on-transfer
+      const amtFee = ethers.parseEther("1000");
+      const amtB = ethers.parseEther("1000");
+
+      await feeToken.connect(user1).approve(await fizzDex.getAddress(), amtFee);
+      await tokenB.connect(user1).approve(await fizzDex.getAddress(), amtB);
+
+      // Add liquidity (fee will be taken on transfer)
+      await expect(
+        fizzDex.connect(user1).addLiquidity(
+          await feeToken.getAddress(),
+          await tokenB.getAddress(),
+          amtFee,
+          amtB
+        )
+      ).to.emit(fizzDex, "LiquidityAdded");
+
+      // Now perform a swap using fee-token as input
+      const swapAmount = ethers.parseEther("10");
+      await feeToken.connect(user1).approve(await fizzDex.getAddress(), swapAmount);
+
+      const tx = await fizzDex.connect(user1).swap(
+        await feeToken.getAddress(),
+        await tokenB.getAddress(),
+        swapAmount,
+        0
+      );
+
+      const receipt = await tx.wait();
+      const ev = receipt?.logs.find((l: any) => {
+        try { return fizzDex.interface.parseLog(l)?.name === "Swap"; } catch { return false; }
+      });
+      expect(ev).to.not.be.undefined;
+
+      const parsed = fizzDex.interface.parseLog(ev);
+      // amountIn emitted should be < swapAmount because of fee-on-transfer
+      const emittedAmountIn = parsed.args.amountIn;
+      expect(emittedAmountIn).to.be.lt(swapAmount);
+    });
+
+    it("Should allow adding liquidity with token order reversed", async function () {
+      const amountA = ethers.parseEther("500");
+      const amountB = ethers.parseEther("500");
+
+      // Provide approvals
+      await tokenA.connect(user1).approve(await fizzDex.getAddress(), amountA);
+      await tokenB.connect(user1).approve(await fizzDex.getAddress(), amountB);
+
+      // Call addLiquidity with reversed token order
+      await expect(
+        fizzDex.connect(user1).addLiquidity(
+          await tokenB.getAddress(),
+          await tokenA.getAddress(),
+          amountB,
+          amountA
+        )
+      ).to.emit(fizzDex, "LiquidityAdded");
+
+      const poolId = await fizzDex.getPoolId(await tokenA.getAddress(), await tokenB.getAddress());
+      const pool = await fizzDex.pools(poolId);
+      expect(pool.reserveA).to.be.gt(0);
+      expect(pool.reserveB).to.be.gt(0);
+    });
   });
 
   describe("Fizz Caps Game", function () {
@@ -203,27 +275,20 @@ describe("FizzDex", function () {
       );
 
       const receipt = await tx.wait();
-      const event = receipt?.logs.find((log: any) => {
-        try {
-          return fizzDex.interface.parseLog(log)?.name === "AtomicSwapInitiated";
-        } catch {
-          return false;
-        }
-      });
+      const parsed = receipt?.logs
+        .map((l: any) => {
+          try { return fizzDex.interface.parseLog(l); } catch { return null; }
+        })
+        .find((p: any) => p && p.name === "AtomicSwapInitiated");
 
-      expect(event).to.not.be.undefined;
+      expect(parsed).to.not.be.undefined;
+      const swapId = parsed.args[0];
 
-      // Calculate swap ID
-      const swapId = ethers.keccak256(
-        ethers.AbiCoder.defaultAbiCoder().encode(
-          ["address", "address", "address", "uint256", "bytes32", "uint256"],
-          [user1.address, user2.address, await tokenA.getAddress(), amount, secretHash, timelock]
-        )
-      );
+      // Complete the swap (participant provides secret preimage)
+      const secretBytes = ethers.toUtf8Bytes(secret);
 
-      // Complete the swap
       await expect(
-        fizzDex.connect(user2).completeAtomicSwap(swapId, ethers.toUtf8Bytes(secret))
+        fizzDex.connect(user2).completeAtomicSwap(swapId, secretBytes)
       ).to.emit(fizzDex, "AtomicSwapCompleted");
     });
   });

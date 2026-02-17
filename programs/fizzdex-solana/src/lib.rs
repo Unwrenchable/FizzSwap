@@ -326,7 +326,119 @@ pub mod fizzdex_solana {
         dex_state.paused = paused;
         Ok(())
     }
-}
+
+    // -------------------------
+    // Atomic (HTLC) swap support
+    // -------------------------
+
+    /// Initiate an HTLC-style atomic swap on Solana — locks tokens in an escrow vault
+    pub fn initiate_atomic_swap(
+        ctx: Context<InitiateAtomicSwap>,
+        amount: u64,
+        secret_hash: [u8; 32],
+        timelock: i64,
+    ) -> Result<()> {
+        let clock = Clock::get()?;
+        require!(timelock > clock.unix_timestamp, ErrorCode::InvalidTimelock);
+        require!(amount > 0, ErrorCode::InvalidAmount);
+
+        let swap = &mut ctx.accounts.atomic_swap;
+        swap.initiator = ctx.accounts.initiator.key();
+        swap.participant = ctx.accounts.participant.key();
+        swap.token_mint = ctx.accounts.token_mint.key();
+        swap.escrow_vault = ctx.accounts.escrow_vault.key();
+        swap.amount = amount;
+        swap.secret_hash = secret_hash;
+        swap.timelock = timelock;
+        swap.completed = false;
+        swap.refunded = false;
+
+        // Transfer tokens from initiator to escrow vault
+        token::transfer(
+            CpiContext::new(
+                ctx.accounts.token_program.to_account_info(),
+                Transfer {
+                    from: ctx.accounts.initiator_token_account.to_account_info(),
+                    to: ctx.accounts.escrow_vault.to_account_info(),
+                    authority: ctx.accounts.initiator.to_account_info(),
+                },
+            ),
+            amount,
+        )?;
+
+        Ok(())
+    }
+
+    /// Complete an HTLC by providing the preimage (secret)
+    pub fn complete_atomic_swap(ctx: Context<CompleteAtomicSwap>, secret: Vec<u8>) -> Result<()> {
+        let swap = &mut ctx.accounts.atomic_swap;
+        require!(!swap.completed, ErrorCode::AlreadyCompleted);
+        require!(!swap.refunded, ErrorCode::AlreadyRefunded);
+
+        // Verify secret hash (keccak256) — compatible with EVM keccak256(secret)
+        let computed = solana_program::keccak::hash(&secret);
+        require!(computed.0 == swap.secret_hash, ErrorCode::InvalidSecret);
+        require!(ctx.accounts.participant.key() == swap.participant, ErrorCode::Unauthorized);
+
+        // Transfer escrowed tokens to participant
+        token::transfer(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                Transfer {
+                    from: ctx.accounts.escrow_vault.to_account_info(),
+                    to: ctx.accounts.participant_token_account.to_account_info(),
+                    authority: ctx.accounts.atomic_swap.to_account_info(),
+                },
+                &[&[
+                    b"atomic_swap",
+                    swap.initiator.as_ref(),
+                    swap.participant.as_ref(),
+                    swap.token_mint.as_ref(),
+                    &swap.timelock.to_le_bytes(),
+                    &[ctx.bumps.atomic_swap],
+                ]],
+            ),
+            swap.amount,
+        )?;
+
+        swap.completed = true;
+        Ok(())
+    }
+
+    /// Refund an HTLC after timelock expires
+    pub fn refund_atomic_swap(ctx: Context<RefundAtomicSwap>) -> Result<()> {
+        let swap = &mut ctx.accounts.atomic_swap;
+        require!(ctx.accounts.initiator.key() == swap.initiator, ErrorCode::Unauthorized);
+        require!(!swap.completed, ErrorCode::AlreadyCompleted);
+        require!(!swap.refunded, ErrorCode::AlreadyRefunded);
+
+        let clock = Clock::get()?;
+        require!(clock.unix_timestamp > swap.timelock, ErrorCode::TimelockNotExpired);
+
+        // Transfer escrowed tokens back to initiator
+        token::transfer(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                Transfer {
+                    from: ctx.accounts.escrow_vault.to_account_info(),
+                    to: ctx.accounts.initiator_token_account.to_account_info(),
+                    authority: ctx.accounts.atomic_swap.to_account_info(),
+                },
+                &[&[
+                    b"atomic_swap",
+                    swap.initiator.as_ref(),
+                    swap.participant.as_ref(),
+                    swap.token_mint.as_ref(),
+                    &swap.timelock.to_le_bytes(),
+                    &[ctx.bumps.atomic_swap],
+                ]],
+            ),
+            swap.amount,
+        )?;
+
+        swap.refunded = true;
+        Ok(())
+    }}
 
 // Account structures with proper initialization
 
@@ -406,6 +518,81 @@ pub struct AddLiquidity<'info> {
     pub token_b_vault: Account<'info, TokenAccount>,
     #[account(mut)]
     pub lp_mint: Account<'info, Mint>,
+}
+
+// -------------------------
+// Atomic-swap (HTLC) account contexts
+// -------------------------
+
+#[derive(Accounts)]
+#[instruction(amount: u64, secret_hash: [u8;32], timelock: i64)]
+pub struct InitiateAtomicSwap<'info> {
+    #[account(mut)]
+    pub initiator: Signer<'info>,
+    /// CHECK: participant pubkey only
+    pub participant: UncheckedAccount<'info>,
+    pub token_mint: Account<'info, Mint>,
+    #[account(mut, constraint = initiator_token_account.owner == initiator.key())]
+    pub initiator_token_account: Account<'info, TokenAccount>,
+    /// Escrow vault owned by the atomic_swap PDA
+    #[account(
+        init,
+        payer = initiator,
+        token::mint = token_mint,
+        token::authority = atomic_swap,
+        // escrow_vault uses a distinct seed to avoid PDA/address collision with the atomic_swap account
+        seeds = [b"escrow_vault", initiator.key().as_ref(), participant.key().as_ref(), token_mint.key().as_ref(), &timelock.to_le_bytes()],
+        bump
+    )]
+    pub escrow_vault: Account<'info, TokenAccount>,
+    #[account(
+        init,
+        payer = initiator,
+        space = 8 + AtomicSwap::INIT_SPACE,
+        seeds = [b"atomic_swap", initiator.key().as_ref(), participant.key().as_ref(), token_mint.key().as_ref(), &timelock.to_le_bytes()],
+        bump
+    )]
+    pub atomic_swap: Account<'info, AtomicSwap>,
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    pub token_program: Program<'info, Token>,
+    pub system_program: Program<'info, System>,
+    pub rent: Sysvar<'info, Rent>,
+}
+
+#[derive(Accounts)]
+pub struct CompleteAtomicSwap<'info> {
+    #[account(mut)]
+    pub participant: Signer<'info>,
+    #[account(
+        mut,
+        seeds = [b"atomic_swap", atomic_swap.initiator.as_ref(), atomic_swap.participant.as_ref(), atomic_swap.token_mint.as_ref(), &atomic_swap.timelock.to_le_bytes()],
+        bump
+    )]
+    pub atomic_swap: Account<'info, AtomicSwap>,
+    #[account(mut, constraint = escrow_vault.mint == atomic_swap.token_mint && escrow_vault.owner == atomic_swap.key())]
+    pub escrow_vault: Account<'info, TokenAccount>,
+    #[account(mut, constraint = participant_token_account.owner == participant.key() && participant_token_account.mint == atomic_swap.token_mint)]
+    pub participant_token_account: Account<'info, TokenAccount>,
+    pub token_program: Program<'info, Token>,
+}
+
+#[derive(Accounts)]
+pub struct RefundAtomicSwap<'info> {
+    #[account(mut)]
+    pub initiator: Signer<'info>,
+    #[account(
+        mut,
+        seeds = [b"atomic_swap", atomic_swap.initiator.as_ref(), atomic_swap.participant.as_ref(), atomic_swap.token_mint.as_ref(), &atomic_swap.timelock.to_le_bytes()],
+        bump
+    )]
+    pub atomic_swap: Account<'info, AtomicSwap>,
+    #[account(mut, constraint = escrow_vault.mint == atomic_swap.token_mint && escrow_vault.owner == atomic_swap.key())]
+    pub escrow_vault: Account<'info, TokenAccount>,
+    #[account(mut, constraint = initiator_token_account.owner == initiator.key() && initiator_token_account.mint == atomic_swap.token_mint)]
+    pub initiator_token_account: Account<'info, TokenAccount>,
+    pub token_program: Program<'info, Token>,
+}
     #[account(mut)]
     pub user_token_a: Account<'info, TokenAccount>,
     #[account(mut)]
@@ -519,6 +706,20 @@ pub struct PlayerState {
     pub last_play_time: i64,
 }
 
+#[account]
+#[derive(InitSpace)]
+pub struct AtomicSwap {
+    pub initiator: Pubkey,
+    pub participant: Pubkey,
+    pub token_mint: Pubkey,
+    pub escrow_vault: Pubkey,
+    pub amount: u64,
+    pub secret_hash: [u8; 32],
+    pub timelock: i64,
+    pub completed: bool,
+    pub refunded: bool,
+}
+
 // Helper trait for integer square root
 trait IntegerSquareRoot {
     fn integer_sqrt(&self) -> Self;
@@ -568,4 +769,14 @@ pub enum ErrorCode {
     Unauthorized,
     #[msg("Fee too high (max 5%)")]
     FeeTooHigh,
+    #[msg("Invalid timelock")]
+    InvalidTimelock,
+    #[msg("Invalid secret/preimage")]
+    InvalidSecret,
+    #[msg("Swap already completed")]
+    AlreadyCompleted,
+    #[msg("Swap already refunded")]
+    AlreadyRefunded,
+    #[msg("Timelock has not yet expired")]
+    TimelockNotExpired,
 }
