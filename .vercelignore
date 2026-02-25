@@ -1,0 +1,32 @@
+# Exclude everything that is not needed to build the web frontend.
+# Vercel only needs web/ — all other directories are contract tooling,
+# Solana programs, the relayer, or test infrastructure.
+
+# Solidity contracts & Hardhat tooling
+contracts/
+artifacts/
+cache/
+typechain-types/
+coverage/
+
+# Solana / Rust programs
+programs/
+
+# Cross-chain relayer (server-side, not deployed to Vercel)
+relayer/
+
+# Chain adapters & TypeScript SDK (built separately)
+src/
+
+# Tests
+test/
+
+# Build artifacts from the root TypeScript project
+dist/
+
+# Root-level dependency tree (Hardhat, OZ, etc.) — not needed for frontend
+node_modules/
+
+# Misc
+*.log
+.DS_Store
