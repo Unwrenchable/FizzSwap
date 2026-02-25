@@ -1010,190 +1010,37 @@ export default function App() {
           <div className="tab-panel">
             {/* Hero */}
             <div className="game-hero">
-              <div className="game-title">🎮 Play FizzCaps</div>
-              <div className="game-subtitle">Play the FizzBuzz game. Earn FIZZ tokens!</div>
+              <div className="game-title">🎮 FizzCaps</div>
+              <div className="game-subtitle">The on-chain FizzBuzz game — coming to the FizzSwap ecosystem!</div>
             </div>
 
-            <div className="card card-gold">
-              {/* Number display */}
-              <div className="game-number-display">
-                <div className={`game-number-big ${preview.bigClass}`}>{gameNumber}</div>
-                <span className={`game-label-badge ${preview.badgeClass}`}>{preview.label}</span>
-                {preview.reward !== "—" && (
-                  <div className="badge-reward">+{preview.reward} FIZZ</div>
-                )}
-              </div>
-
-              {/* Slider */}
-              <input
-                type="range"
-                className="game-slider"
-                min={1}
-                max={100}
-                value={gameNumber}
-                onChange={(e) => setGameNumber(Number(e.target.value))}
-                aria-label="Pick a number 1–100"
-              />
-
-              <div className="game-number-input-wrap">
-                <span className="text-muted text-sm">1</span>
-                <input
-                  type="number"
-                  className="game-number-input"
-                  min={1}
-                  max={100}
-                  value={gameNumber}
-                  onChange={(e) => setGameNumber(Math.min(100, Math.max(1, Number(e.target.value))))}
-                  aria-label="Number to play"
-                />
-                <span className="text-muted text-sm">100</span>
-              </div>
-
-              {/* Rewards table */}
-              <table className="rewards-table" aria-label="Reward breakdown">
-                <thead>
-                  <tr>
-                    <th>Result</th>
-                    <th>Condition</th>
-                    <th>Reward</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr>
-                    <td><span className="text-accent-2 font-bold">🍋 Fizz</span></td>
-                    <td className="text-muted font-mono">n ÷ 3 = 0</td>
-                    <td><span className="text-accent font-bold">10 FIZZ</span></td>
-                  </tr>
-                  <tr>
-                    <td><span className="text-accent-3 font-bold">🎯 Buzz</span></td>
-                    <td className="text-muted font-mono">n ÷ 5 = 0</td>
-                    <td><span className="text-accent font-bold">15 FIZZ</span></td>
-                  </tr>
-                  <tr>
-                    <td><span className="text-accent font-bold">💥 FizzBuzz</span></td>
-                    <td className="text-muted font-mono">n ÷ 15 = 0</td>
-                    <td><span className="text-accent font-bold">50 FIZZ</span></td>
-                  </tr>
-                  <tr>
-                    <td><span className="text-muted">— Miss</span></td>
-                    <td className="text-muted font-mono">anything else</td>
-                    <td><span className="text-muted">0 FIZZ</span></td>
-                  </tr>
-                </tbody>
-              </table>
-
-              {/* Contract / chain */}
-              <div className="field-group">
-                <label className="field-label" htmlFor="game-fizzdex">FizzDex Contract</label>
-                <input
-                  id="game-fizzdex"
-                  className="field-input"
-                  placeholder="0x…"
-                  value={gameFizzDex}
-                  onChange={(e) => setGameFizzDex(e.target.value)}
-                />
-              </div>
-
-              <div className="chain-selector" style={{ marginTop: 10 }}>
-                <button
-                  className={`btn-outline${gameChain === "evm" ? " active-evm" : ""}`}
-                  onClick={() => setGameChain("evm")}
-                >EVM</button>
-                <button
-                  className={`btn-outline${gameChain === "solana" ? " active-sol" : ""}`}
-                  onClick={() => setGameChain("solana")}
-                >Solana</button>
-              </div>
-
-              {/* Cooldown */}
-              {cooldownRemaining > 0 && (
-                <div className="cooldown-wrap">
-                  <div className="cooldown-label">
-                    <span>⏳ Cooldown</span>
-                    <span>{cooldownRemaining}s</span>
-                  </div>
-                  <div className="cooldown-bar-bg">
-                    <div
-                      className="cooldown-bar-fill"
-                      style={{ width: `${(cooldownRemaining / 60) * 100}%` }}
-                    />
-                  </div>
-                </div>
-              )}
-
-              <button
-                className="btn-gold"
-                onClick={playGame}
-                disabled={isPlaying || !account || cooldownRemaining > 0}
-              >
-                {isPlaying ? (
-                  <span style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
-                    Playing… <span className="spinner" />
-                  </span>
-                ) : cooldownRemaining > 0 ? `⏳ Wait ${cooldownRemaining}s` : "🎮 PLAY FIZZCAPS"}
-              </button>
-            </div>
-
-            {/* Player stats */}
-            <div className="card">
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
-                <h2 className="card-title" style={{ margin: 0 }}><span>📊</span> Your Stats</h2>
-                <button
-                  className="btn-sm"
-                  onClick={fetchPlayerStats}
-                  disabled={!account}
+            <div className="card card-gold" style={{ textAlign: "center", padding: "40px 24px" }}>
+              <div style={{ fontSize: "4rem", marginBottom: 16 }}>🚀</div>
+              <h2 className="card-title" style={{ fontSize: "1.5rem", marginBottom: 12 }}>Coming Soon</h2>
+              <p style={{ color: "var(--muted)", maxWidth: 420, margin: "0 auto 24px" }}>
+                FizzCaps is a future feature planned for the FizzSwap ecosystem. It will launch on{" "}
+                <a
+                  href="https://atomicfizzcaps.xyz"
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{ color: "var(--accent)", textDecoration: "underline" }}
                 >
-                  Refresh
-                </button>
-              </div>
-
-              {playerStats ? (
-                <>
-                  <div className="stats-grid">
-                    <div className="stat-tile">
-                      <div className="stat-value glow-green">{String(playerStats.score)}</div>
-                      <div className="stat-label">Score</div>
-                    </div>
-                    <div className="stat-tile">
-                      <div className="stat-value text-accent-2">{String(playerStats.fizz)}</div>
-                      <div className="stat-label">Fizz Hits</div>
-                    </div>
-                    <div className="stat-tile">
-                      <div className="stat-value text-accent-3">{String(playerStats.buzz)}</div>
-                      <div className="stat-label">Buzz Hits</div>
-                    </div>
-                    <div className="stat-tile">
-                      <div className="stat-value glow-gold">{String(playerStats.fizzBuzz)}</div>
-                      <div className="stat-label">FizzBuzz!</div>
-                    </div>
-                    <div className="stat-tile" style={{ gridColumn: "span 2" }}>
-                      <div className="stat-value text-accent" style={{ fontSize: "1.1rem" }}>
-                        {Number(ethers.formatEther(playerStats.reward)).toFixed(4)} FIZZ
-                      </div>
-                      <div className="stat-label">Unclaimed Rewards</div>
-                    </div>
-                  </div>
-
-                  <button
-                    className="btn-primary"
-                    onClick={claimRewards}
-                    disabled={isClaiming || !account}
-                    style={{ marginTop: 14 }}
-                  >
-                    {isClaiming ? (
-                      <span style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
-                        Claiming… <span className="spinner" />
-                      </span>
-                    ) : "💸 CLAIM REWARDS"}
-                  </button>
-                </>
-              ) : (
-                <div className="notice-box" style={{ textAlign: "center" }}>
-                  {account
-                    ? <>Connect a FizzDex contract and click <strong>Refresh</strong> to load your stats.</>
-                    : <>Connect your wallet to view your FizzCaps stats.</>}
-                </div>
-              )}
+                  atomicfizzcaps.xyz
+                </a>{" "}
+                after the game has established itself on mainnet.
+              </p>
+              <p style={{ color: "var(--muted)", maxWidth: 420, margin: "0 auto 24px", fontSize: "0.9rem" }}>
+                Stay tuned — earn FIZZ tokens by playing the on-chain FizzBuzz game once it goes live!
+              </p>
+              <a
+                href="https://atomicfizzcaps.xyz"
+                target="_blank"
+                rel="noreferrer"
+                className="btn-gold"
+                style={{ display: "inline-block", textDecoration: "none" }}
+              >
+                🌐 Visit atomicfizzcaps.xyz
+              </a>
             </div>
           </div>
         )}
