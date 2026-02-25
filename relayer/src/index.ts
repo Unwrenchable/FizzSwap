@@ -184,9 +184,9 @@ app.post("/start-listen", async (req, res) => {
 // -------------------------
 // Aggregate quote endpoint (multi-chain)
 // -------------------------
-import { MultiChainDEX } from "../src/chain-adapter";
-import { RouteAggregator } from "../src/route-aggregator";
-import { SolanaAdapter } from "../src/adapters/solana-adapter";
+import { MultiChainDEX } from "./chain-adapter";
+import { RouteAggregator } from "./route-aggregator";
+import { SolanaAdapter } from "./adapters/solana-adapter";
 
 app.post('/aggregate-quote', async (req, res) => {
   const { chains, inputChainId, inputToken, outputToken, amount } = req.body;

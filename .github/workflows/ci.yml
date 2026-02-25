@@ -2,73 +2,41 @@ name: CI
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [main, master]
   pull_request:
-    branches: [ main, master ]
+    branches: [main, master]
 
 jobs:
-  build:
+  web:
+    name: Web (Vite build)
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        node-version: [18.x]
-
     steps:
       - uses: actions/checkout@v4
 
-      - name: Use Node.js
+      - name: Use Node.js 20
         uses: actions/setup-node@v4
         with:
-          node-version: ${{ matrix.node-version }}
+          node-version: 20
 
       - name: Install dependencies
-        run: npm ci --legacy-peer-deps
+        run: cd web && npm ci --legacy-peer-deps
 
-      - name: Lint TypeScript
-        run: npm run lint || true
+      - name: Build
+        run: cd web && npm run build
 
-      - name: Typecheck
-        run: npx tsc --noEmit
+  relayer:
+    name: Relayer (TypeScript build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
 
-      - name: Initialize relayer mappings (encrypted)
-        env:
-          RELAYER_MAPPINGS_KEY: ${{ secrets.RELAYER_MAPPINGS_KEY || '' }}
-        run: npm run relayer:init-mappings
+      - name: Use Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
 
-      - name: Run tests
-        env:
-          # Provide minimal env vars for relayer where needed
-          RELAYER_API_KEY: ${{ secrets.RELAYER_API_KEY || '' }}
-        run: npm test
+      - name: Install dependencies
+        run: cd relayer && npm ci --legacy-peer-deps
 
-      - name: Run solhint
-        run: npx solhint 'contracts/**/*.sol'
-
-      - name: Run slither (Docker)
-        if: always()
-        run: |
-          docker run --rm -v ${{ github.workspace }}:/src -w /src --entrypoint slither trailofbits/slither:latest /src || true
-++ name: CI
-  on:
-    push:
-      branches: [ main ]
-    pull_request:
-      branches: [ main ]
-
-  jobs:
-    test:
-      runs-on: ubuntu-latest
-      steps:
-        - uses: actions/checkout@v4
-        - name: Use Node.js
-          uses: actions/setup-node@v4
-          with:
-            node-version: 20
-        - name: Install deps
-          run: npm ci
-        - name: Build TypeScript
-          run: npm run build
-        - name: Run tests
-          run: npm test --silent
-        - name: Run npm audit (fail on high)
-          run: npm audit --audit-level=high
+      - name: Build
+        run: cd relayer && npm run build

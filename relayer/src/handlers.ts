@@ -1,5 +1,5 @@
 import { ethers } from 'ethers';
-import { SolanaAdapter } from '../../src/adapters/solana-adapter';
+import { SolanaAdapter } from './adapters/solana-adapter';
 
 export async function executeRouteHandler(body: any) {
   const { chainId, chainType, inputToken, outputToken, amount, minOutput, chains } = body;
