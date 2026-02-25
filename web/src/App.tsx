@@ -324,8 +324,8 @@ export default function App() {
     if (!(window as any).solana?.isPhantom) throw new Error("Phantom not available");
 
     const prov    = (window as any).solana;
-    const conn    = new Connection(process.env.SOLANA_RPC || "https://api.devnet.solana.com", "confirmed");
-    const programId = new PublicKey(process.env.SOLANA_PROGRAM_ID || "FizzDEXProgram11111111111111111111111111111111");
+    const conn    = new Connection(import.meta.env.VITE_SOLANA_RPC || "https://api.devnet.solana.com", "confirmed");
+    const programId = new PublicKey(import.meta.env.VITE_SOLANA_PROGRAM_ID || "FizzDEXProgram11111111111111111111111111111111");
 
     const initiatorPub  = prov.publicKey;
     const participantPk = new PublicKey(participant);
@@ -425,8 +425,8 @@ export default function App() {
 
     try {
       const prov      = (window as any).solana;
-      const conn      = new Connection(process.env.SOLANA_RPC || "https://api.devnet.solana.com", "confirmed");
-      const programId = new PublicKey(process.env.SOLANA_PROGRAM_ID || "FizzDEXProgram11111111111111111111111111111111");
+      const conn      = new Connection(import.meta.env.VITE_SOLANA_RPC || "https://api.devnet.solana.com", "confirmed");
+      const programId = new PublicKey(import.meta.env.VITE_SOLANA_PROGRAM_ID || "FizzDEXProgram11111111111111111111111111111111");
 
       const participantPub = prov.publicKey;
       const atomicSwapPk   = new PublicKey(solAtomicSwapPda);
@@ -472,7 +472,7 @@ export default function App() {
 
   async function watchSolanaForReveal(start: boolean) {
     if (!solAtomicSwapPda) return addLog("No Solana atomicSwap PDA provided");
-    const conn = new Connection(process.env.SOLANA_RPC || "https://api.devnet.solana.com", "confirmed");
+    const conn = new Connection(import.meta.env.VITE_SOLANA_RPC || "https://api.devnet.solana.com", "confirmed");
     const pda  = new PublicKey(solAtomicSwapPda);
 
     if (!start) {
@@ -519,7 +519,7 @@ export default function App() {
       const chains = JSON.parse(routeChainList || "[]");
       if (!chains?.length) return addLog("No chains configured for aggregation");
       const body = { chains, inputChainId: chains[0].chainId, inputToken: tokenAddr, outputToken, amount: amount || "0" };
-      const resp = await fetch((process.env.RELAYER_URL || "http://localhost:4001") + "/aggregate-quote", {
+      const resp = await fetch((import.meta.env.VITE_RELAYER_URL || "http://localhost:4001") + "/aggregate-quote", {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
       });
       const j = await resp.json();
@@ -567,7 +567,7 @@ export default function App() {
 
       const body = { chainId: cfg.chainId, chainType: cfg.chainType || "evm", inputToken: inTok, outputToken: outTok, amount: amt, minOutput, chains };
       addLog(`Executing route on ${cfg.chainId} (type=${cfg.chainType}) amount=${amt}`);
-      const resp = await fetch((process.env.RELAYER_URL || "http://localhost:4001") + "/execute-route", {
+      const resp = await fetch((import.meta.env.VITE_RELAYER_URL || "http://localhost:4001") + "/execute-route", {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
       });
       const j = await resp.json();
@@ -633,7 +633,7 @@ export default function App() {
     }
 
     try {
-      const resp = await fetch((process.env.RELAYER_URL || "http://localhost:4001") + "/solana/initiate-htlc", {
+      const resp = await fetch((import.meta.env.VITE_RELAYER_URL || "http://localhost:4001") + "/solana/initiate-htlc", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ participant, tokenMint: solanaMint, amount, secretHash: secret ? "0x" + ethers.keccak256(ethers.toUtf8Bytes(secret)).replace(/^0x/, "") : undefined, timelock }),
