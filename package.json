@@ -11,7 +11,7 @@
     "lint": "eslint . --ext .ts,.js",
     "compile-contracts": "hardhat compile",
     "deploy-evm": "hardhat run scripts/deploy-evm.ts",
-    "build-solana": "cargo build-bpf --manifest-path=contracts/solana/Cargo.toml"
+    "build-solana": "cargo build-bpf --manifest-path=programs/fizzdex-solana/Cargo.toml"
   },
   "keywords": [
     "dex",
