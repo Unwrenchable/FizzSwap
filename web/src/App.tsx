@@ -49,6 +49,13 @@ function fizzBuzzPreview(n: number): FizzResult {
   return              { label: "—",         reward: "—",  color: "#8a9e8d", badgeClass: "badge-miss",     bigClass: "miss"     };
 }
 
+// ─── Web Crypto helper (replaces Node.js require("crypto") for browser) ──────
+async function anchorDisc(name: string): Promise<Buffer> {
+  const encoded = new TextEncoder().encode(name);
+  const hash = await globalThis.crypto.subtle.digest("SHA-256", encoded);
+  return Buffer.from(hash).slice(0, 8);
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 type Tab = "swap" | "pool" | "fizzcaps" | "bridge";
 
@@ -324,8 +331,8 @@ export default function App() {
     if (!(window as any).solana?.isPhantom) throw new Error("Phantom not available");
 
     const prov    = (window as any).solana;
-    const conn    = new Connection(process.env.SOLANA_RPC || "https://api.devnet.solana.com", "confirmed");
-    const programId = new PublicKey(process.env.SOLANA_PROGRAM_ID || "FizzDEXProgram11111111111111111111111111111111");
+    const conn    = new Connection(import.meta.env.VITE_SOLANA_RPC || "https://api.devnet.solana.com", "confirmed");
+    const programId = new PublicKey(import.meta.env.VITE_SOLANA_PROGRAM_ID || "FizzDEXProgram11111111111111111111111111111111");
 
     const initiatorPub  = prov.publicKey;
     const participantPk = new PublicKey(participant);
@@ -364,8 +371,7 @@ export default function App() {
       { pubkey: SYSVAR_RENT_PUBKEY,        isSigner: false, isWritable: false },
     ];
 
-    const crypto = require("crypto");
-    const disc   = Buffer.from(crypto.createHash("sha256").update("global:initiate_atomic_swap").digest().slice(0, 8));
+    const disc   = await anchorDisc("global:initiate_atomic_swap");
     const amtBuf = Buffer.alloc(8);
     amtBuf.writeBigUInt64LE(amtU64);
     const tlBuf2 = Buffer.alloc(8);
@@ -425,8 +431,8 @@ export default function App() {
 
     try {
       const prov      = (window as any).solana;
-      const conn      = new Connection(process.env.SOLANA_RPC || "https://api.devnet.solana.com", "confirmed");
-      const programId = new PublicKey(process.env.SOLANA_PROGRAM_ID || "FizzDEXProgram11111111111111111111111111111111");
+      const conn      = new Connection(import.meta.env.VITE_SOLANA_RPC || "https://api.devnet.solana.com", "confirmed");
+      const programId = new PublicKey(import.meta.env.VITE_SOLANA_PROGRAM_ID || "FizzDEXProgram11111111111111111111111111111111");
 
       const participantPub = prov.publicKey;
       const atomicSwapPk   = new PublicKey(solAtomicSwapPda);
@@ -434,8 +440,7 @@ export default function App() {
       const mintPk         = new PublicKey(solanaMint || "So11111111111111111111111111111111111111112");
       const participantAta = await getAssociatedTokenAddress(mintPk, participantPub);
 
-      const crypto    = require("crypto");
-      const disc      = Buffer.from(crypto.createHash("sha256").update("global:complete_atomic_swap").digest().slice(0, 8));
+      const disc      = await anchorDisc("global:complete_atomic_swap");
       const secretBuf = Buffer.from(secret);
       const lenBuf    = Buffer.alloc(4);
       lenBuf.writeUInt32LE(secretBuf.length);
@@ -472,7 +477,7 @@ export default function App() {
 
   async function watchSolanaForReveal(start: boolean) {
     if (!solAtomicSwapPda) return addLog("No Solana atomicSwap PDA provided");
-    const conn = new Connection(process.env.SOLANA_RPC || "https://api.devnet.solana.com", "confirmed");
+    const conn = new Connection(import.meta.env.VITE_SOLANA_RPC || "https://api.devnet.solana.com", "confirmed");
     const pda  = new PublicKey(solAtomicSwapPda);
 
     if (!start) {
@@ -492,8 +497,7 @@ export default function App() {
           const ix = tx.transaction.message.instructions.find((i: any) => i.data && i.data.length > 16);
           if (!ix) continue;
           const data   = Buffer.from((ix as any).data, "base64");
-          const crypto = require("crypto");
-          const disc   = crypto.createHash("sha256").update("global:complete_atomic_swap").digest().slice(0, 8);
+          const disc   = await anchorDisc("global:complete_atomic_swap");
           if (data.slice(0, 8).equals(disc)) {
             const len       = data.readUInt32LE(8);
             const secretStr = data.slice(12, 12 + len).toString();
@@ -519,7 +523,7 @@ export default function App() {
       const chains = JSON.parse(routeChainList || "[]");
       if (!chains?.length) return addLog("No chains configured for aggregation");
       const body = { chains, inputChainId: chains[0].chainId, inputToken: tokenAddr, outputToken, amount: amount || "0" };
-      const resp = await fetch((process.env.RELAYER_URL || "http://localhost:4001") + "/aggregate-quote", {
+      const resp = await fetch((import.meta.env.VITE_RELAYER_URL || "http://localhost:4001") + "/aggregate-quote", {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
       });
       const j = await resp.json();
@@ -567,7 +571,7 @@ export default function App() {
 
       const body = { chainId: cfg.chainId, chainType: cfg.chainType || "evm", inputToken: inTok, outputToken: outTok, amount: amt, minOutput, chains };
       addLog(`Executing route on ${cfg.chainId} (type=${cfg.chainType}) amount=${amt}`);
-      const resp = await fetch((process.env.RELAYER_URL || "http://localhost:4001") + "/execute-route", {
+      const resp = await fetch((import.meta.env.VITE_RELAYER_URL || "http://localhost:4001") + "/execute-route", {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
       });
       const j = await resp.json();
@@ -633,7 +637,7 @@ export default function App() {
     }
 
     try {
-      const resp = await fetch((process.env.RELAYER_URL || "http://localhost:4001") + "/solana/initiate-htlc", {
+      const resp = await fetch((import.meta.env.VITE_RELAYER_URL || "http://localhost:4001") + "/solana/initiate-htlc", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ participant, tokenMint: solanaMint, amount, secretHash: secret ? "0x" + ethers.keccak256(ethers.toUtf8Bytes(secret)).replace(/^0x/, "") : undefined, timelock }),
