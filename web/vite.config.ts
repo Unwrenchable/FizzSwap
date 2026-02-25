@@ -7,4 +7,7 @@ export default defineConfig({
     react(),
     nodePolyfills(),
   ],
+  build: {
+    chunkSizeWarningLimit: 1000,
+  },
 });
