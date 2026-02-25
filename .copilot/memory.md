@@ -70,8 +70,8 @@ order (newest first) within each section.
 - The large-chunk Vite warning (>500 KB) is expected and benign.
 - `minOut = 0` in swap logic means slippage is not enforced on-chain; do not
   assume the UI's fee/slippage display has any on-chain effect.
-- Solana program source lives under `contracts/solana/` (not `programs/`).
-  `cargo build-bpf` targets `contracts/solana/Cargo.toml`.
+- Solana program source lives under `programs/fizzdex-solana/` (not `contracts/solana/`).
+  `cargo build-bpf` targets `programs/fizzdex-solana/Cargo.toml`.
 
 ---
 

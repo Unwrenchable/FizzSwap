@@ -98,7 +98,7 @@ npm run build
 npm run start:prod
 ```
 
-The relayer listens on the port defined in `relayer/.env` (default: `3001`).
+The relayer listens on the port defined in `relayer/.env` (default: `4001`).
 
 ---
 
@@ -147,7 +147,7 @@ npm run preview
 
 ## 4 — Solana program (optional)
 
-The Solana program source lives under `contracts/solana/`. Building it requires
+The Solana program source lives under `programs/fizzdex-solana/`. Building it requires
 Rust and the Solana BPF toolchain.
 
 ```bash
@@ -162,7 +162,7 @@ solana-install init
 
 # Build the program (from repo root)
 npm run build-solana
-# Equivalent: cargo build-bpf --manifest-path=contracts/solana/Cargo.toml
+# Equivalent: cargo build-bpf --manifest-path=programs/fizzdex-solana/Cargo.toml
 # Output: target/deploy/*.so
 ```
 

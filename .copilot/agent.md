@@ -12,9 +12,9 @@ ATOMIC-FIZZ-CAPS-VAULT-77-WASTELAND-GPS ecosystem.
 
 ```
 /                        # Root: Hardhat + TypeScript (EVM contracts & tests)
-├── contracts/           # Solidity contracts (EVM) + Solana program source
-│   └── solana/          # Rust/Anchor Solana program (Cargo.toml here)
-├── programs/            # Additional Anchor program workspace (if present)
+├── contracts/           # Solidity contracts (EVM)
+├── programs/            # Anchor program workspace
+│   └── fizzdex-solana/  # Rust/Anchor Solana program (Cargo.toml here)
 ├── scripts/             # Hardhat deploy scripts (deploy-evm.ts, etc.)
 ├── src/                 # TypeScript utilities / chain adapters
 ├── test/                # Hardhat/Mocha test files
@@ -44,7 +44,7 @@ test               hardhat test
 lint               eslint . --ext .ts,.js
 compile-contracts  hardhat compile
 deploy-evm         hardhat run scripts/deploy-evm.ts
-build-solana       cargo build-bpf --manifest-path=contracts/solana/Cargo.toml
+build-solana       cargo build-bpf --manifest-path=programs/fizzdex-solana/Cargo.toml
 relayer:init-mappings  node relayer/init-mappings.js
 ```
 
