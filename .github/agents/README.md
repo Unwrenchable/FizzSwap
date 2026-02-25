@@ -16,7 +16,7 @@ codebase evolves.
 
 1. **Never store secrets.** No private keys, mnemonic phrases, API keys,
    passwords, RPC credentials, or any other sensitive values may appear in any
-   file under `.copilot/`.
+   file under `.github/agents/`.
 2. **Use `.env` files (git-ignored) for all runtime secrets.** Templates with
    placeholder values live in `.env.example` files at the appropriate level.
 3. **Human review required.** All additions to `memory.md` must be reviewed in
