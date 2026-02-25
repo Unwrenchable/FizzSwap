@@ -139,6 +139,23 @@ npm test
 npm run deploy-evm -- --network sepolia
 ```
 
+### 🌐 Vercel Deployment (Web UI)
+
+The `web/` directory is a Vite + React app that deploys to Vercel via `vercel.json` in the repo root.
+
+1. Import the repository in the [Vercel dashboard](https://vercel.com/new).
+2. Add the following **Environment Variables** in _Project → Settings → Environment Variables_:
+
+   | Variable | Description | Example |
+   |---|---|---|
+   | `VITE_SOLANA_RPC` | Solana JSON-RPC endpoint | `https://api.mainnet-beta.solana.com` |
+   | `VITE_SOLANA_PROGRAM_ID` | Deployed FizzDex program address | `FizzDEXProgram11111111111111111111111111111111` |
+   | `VITE_RELAYER_URL` | Cross-chain relayer base URL | `https://relayer.example.com` |
+
+3. Deploy — Vercel will run `cd web && npm install && npm run build` automatically.
+
+> **Local development**: copy `web/.env.example` to `web/.env` and fill in your values.
+
 ## 📝 Adding New Chains
 
 FizzDex makes it easy to add support for ANY blockchain:
