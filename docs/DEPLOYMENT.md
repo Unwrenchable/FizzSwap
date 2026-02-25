@@ -1,317 +1,548 @@
-# FizzDex Deployment Guide
+# FizzSwap Deployment Guide
+
+This guide covers every layer of the FizzSwap stack: EVM smart contracts,
+the Solana program, the relayer service, the React web frontend, and Docker /
+Vercel production hosting.
+
+---
+
+## Table of Contents
+
+1. [Prerequisites](#prerequisites)
+2. [Local Development Setup](#local-development-setup)
+3. [EVM Smart Contract Deployment](#evm-smart-contract-deployment)
+4. [Solana Program Deployment](#solana-program-deployment)
+5. [Relayer Service Deployment](#relayer-service-deployment)
+6. [Frontend Deployment](#frontend-deployment)
+7. [Docker / Docker Compose](#docker--docker-compose)
+8. [Post-Deployment Steps](#post-deployment-steps)
+9. [Security Checklist](#security-checklist)
+10. [Monitoring](#monitoring)
+11. [Troubleshooting](#troubleshooting)
+12. [Deployment Costs (Approximate)](#deployment-costs-approximate)
+
+---
 
 ## Prerequisites
 
-- Node.js 18+ installed
-- Wallet with funds for gas fees
-- RPC endpoints for target chains
-- Private key for deployment wallet (keep secure!)
+| Requirement | Version | Notes |
+|---|---|---|
+| Node.js | 18.x or 20.x | Node 24 is not supported by Hardhat |
+| npm | 9+ | Bundled with Node.js |
+| Rust + Cargo | stable | Required for Solana program only |
+| Solana CLI | 1.18+ | Required for Solana program only |
+| Docker | 24+ | Required for container deployments only |
 
-## Environment Setup
+---
 
-Create a `.env` file in the project root:
+## Local Development Setup
+
+### 1. Clone and install root dependencies
 
 ```bash
-# EVM Chains
-PRIVATE_KEY=your_private_key_here
+git clone https://github.com/Unwrenchable/FizzSwap.git
+cd FizzSwap
+npm install
+```
+
+### 2. Configure environment variables
+
+Copy the root example env file and fill in your values:
+
+```bash
+cp .env.example .env
+```
+
+Minimum required values for local development:
+
+```bash
+# EVM
+PRIVATE_KEY=0xYOUR_DEPLOYER_PRIVATE_KEY
+EVM_RPC=http://127.0.0.1:8545        # local Hardhat / Ganache node
+
+# Contract address (populated after first deploy)
+FIZZDEX_ADDRESS=
+
+# Etherscan (optional, for contract verification)
+ETHERSCAN_API_KEY=
+```
+
+**⚠️ SECURITY WARNING**: Never commit `.env` to version control. It is already in `.gitignore`.
+
+### 3. Compile and test contracts
+
+```bash
+npm run compile-contracts   # compiles Solidity → artifacts/
+npm test                    # runs Hardhat/Mocha tests
+```
+
+### 4. Start a local Hardhat node (separate terminal)
+
+```bash
+npx hardhat node
+```
+
+### 5. Deploy contracts to the local node
+
+```bash
+npm run deploy-evm -- --network localhost
+```
+
+### 6. Install relayer dependencies and initialise mappings
+
+```bash
+cd relayer
+npm install
+cd ..
+npm run relayer:init-mappings   # creates relayer-mappings.json
+```
+
+### 7. Start the relayer (separate terminal)
+
+```bash
+cd relayer
+RELAYER_PORT=4001 EVM_RPC=http://127.0.0.1:8545 FIZZDEX_ADDRESS=0x... npm run start
+```
+
+### 8. Start the frontend dev server (separate terminal)
+
+```bash
+cd web
+npm install
+cp .env.example .env   # edit VITE_RELAYER_URL, VITE_SOLANA_RPC, VITE_SOLANA_PROGRAM_ID
+npm run dev            # Vite HMR at http://localhost:5173
+```
+
+---
+
+## EVM Smart Contract Deployment
+
+### Environment variables (root `.env`)
+
+```bash
+PRIVATE_KEY=0xYOUR_DEPLOYER_PRIVATE_KEY
+
+# RPC endpoints
 ETH_RPC_URL=https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY
 POLYGON_RPC_URL=https://polygon-rpc.com
 BSC_RPC_URL=https://bsc-dataseed.binance.org
 BASE_RPC_URL=https://mainnet.base.org
 ARBITRUM_RPC_URL=https://arb1.arbitrum.io/rpc
 
-# Solana
-SOLANA_RPC_URL=https://api.mainnet-beta.solana.com
-SOLANA_WALLET_PATH=~/.config/solana/id.json
-
-# XRP
-XRP_SECRET=your_xrp_secret
-XRP_RPC_URL=wss://xrplcluster.com
-
-# Etherscan API keys for verification
+# Block explorer API keys (for contract verification)
 ETHERSCAN_API_KEY=your_key
 POLYGONSCAN_API_KEY=your_key
 BSCSCAN_API_KEY=your_key
 ```
 
-**⚠️ SECURITY WARNING**: Never commit `.env` file to version control!
+### Hardhat network configuration
 
-## Deploying to EVM Chains
-
-### 1. Install Dependencies
-
-```bash
-npm install
-```
-
-### 2. Compile Contracts
-
-```bash
-npm run build
-```
-
-### 3. Deploy to Ethereum Mainnet
-
-```bash
-npx hardhat run scripts/deploy-evm.ts --network ethereum
-```
-
-### 4. Deploy to Other EVM Chains
-
-```bash
-# Polygon
-npx hardhat run scripts/deploy-evm.ts --network polygon
-
-# BSC
-npx hardhat run scripts/deploy-evm.ts --network bsc
-
-# Base
-npx hardhat run scripts/deploy-evm.ts --network base
-
-# Arbitrum
-npx hardhat run scripts/deploy-evm.ts --network arbitrum
-```
-
-### 5. Verify Contracts
-
-```bash
-npx hardhat verify --network ethereum FIZZDEX_ADDRESS REWARD_TOKEN_ADDRESS
-```
-
-## Deploying to Solana
-
-### 1. Install Solana CLI
-
-```bash
-sh -c "$(curl -sSfL https://release.solana.com/stable/install)"
-```
-
-### 2. Configure Wallet
-
-```bash
-solana config set --url https://api.mainnet-beta.solana.com
-solana config set --keypair ~/.config/solana/id.json
-```
-
-### 3. Build Program
-
-```bash
-cd programs/fizzdex-solana
-cargo build-bpf
-```
-
-### 4. Deploy Program
-
-```bash
-solana program deploy target/deploy/fizzdex_solana.so
-```
-
-### 5. Initialize DEX
-
-```bash
-# Use the Solana SDK to call initialize instruction
-# See Solana documentation for details
-```
-
-## Deploying to XRP Ledger
-
-### 1. Setup XRP Wallet
-
-```bash
-# Create or import wallet
-npm run xrp:setup-wallet
-```
-
-### 2. Deploy Hooks
-
-```bash
-# Deploy XRPL hooks for DEX functionality
-npm run xrp:deploy-hooks
-```
-
-## Post-Deployment Setup
-
-### 1. Create Initial Pools
-
-```bash
-# Create USDC/DAI pool on Ethereum
-npm run create-pool -- --chain ethereum --tokenA USDC --tokenB DAI
-```
-
-### 2. Add Initial Liquidity
-
-```bash
-npm run add-liquidity -- --chain ethereum --tokenA USDC --tokenB DAI --amountA 10000 --amountB 10000
-```
-
-### 3. Fund Reward Pools
-
-```bash
-# Fund with FIZZ tokens for game rewards
-npm run fund-rewards -- --chain ethereum --amount 100000000
-```
-
-### 4. Configure Cross-Chain Bridges
-
-```bash
-# Set up Wormhole integration
-npm run setup-bridge -- --source ethereum --target polygon
-```
-
-## Network Configurations
-
-### Hardhat Config
-
-Update `hardhat.config.ts` with your network settings:
+Add networks to `hardhat.config.ts`:
 
 ```typescript
 networks: {
   ethereum: {
     url: process.env.ETH_RPC_URL,
-    accounts: [process.env.PRIVATE_KEY],
+    accounts: [process.env.PRIVATE_KEY!],
     chainId: 1
   },
   polygon: {
     url: process.env.POLYGON_RPC_URL,
-    accounts: [process.env.PRIVATE_KEY],
+    accounts: [process.env.PRIVATE_KEY!],
     chainId: 137
   },
   bsc: {
     url: process.env.BSC_RPC_URL,
-    accounts: [process.env.PRIVATE_KEY],
+    accounts: [process.env.PRIVATE_KEY!],
     chainId: 56
   },
   base: {
     url: process.env.BASE_RPC_URL,
-    accounts: [process.env.PRIVATE_KEY],
+    accounts: [process.env.PRIVATE_KEY!],
     chainId: 8453
+  },
+  arbitrum: {
+    url: process.env.ARBITRUM_RPC_URL,
+    accounts: [process.env.PRIVATE_KEY!],
+    chainId: 42161
   }
 }
 ```
 
-## Testing Deployment
+### Deploy
 
-### Relayer (optional) and Solana HTLC
+```bash
+# Install dependencies (first time)
+npm install
 
-The repository includes a minimal relayer you can run to monitor EVM swaps and optionally create Solana HTLCs on behalf of a payer (useful for demos). **This relayer is optional** — prefer direct wallet-signed Solana transactions in production.
+# Compile contracts
+npm run compile-contracts
 
-Start the relayer:
+# Testnet (recommended first)
+npx hardhat run scripts/deploy-evm.ts --network sepolia
+
+# Mainnets
+npx hardhat run scripts/deploy-evm.ts --network ethereum
+npx hardhat run scripts/deploy-evm.ts --network polygon
+npx hardhat run scripts/deploy-evm.ts --network bsc
+npx hardhat run scripts/deploy-evm.ts --network base
+npx hardhat run scripts/deploy-evm.ts --network arbitrum
+```
+
+### Verify contracts on block explorers
+
+```bash
+npx hardhat verify --network ethereum <FIZZDEX_ADDRESS> <REWARD_TOKEN_ADDRESS>
+npx hardhat verify --network polygon  <FIZZDEX_ADDRESS> <REWARD_TOKEN_ADDRESS>
+```
+
+---
+
+## Solana Program Deployment
+
+### Prerequisites
+
+```bash
+# Install Solana CLI (1.18+)
+sh -c "$(curl -sSfL https://release.solana.com/stable/install)"
+
+# Configure to mainnet (or devnet for testing)
+solana config set --url https://api.mainnet-beta.solana.com
+solana config set --keypair ~/.config/solana/id.json
+
+# Fund the deployer wallet
+solana airdrop 2   # devnet only
+```
+
+### Build the program
+
+```bash
+npm run build-solana
+# equivalent to:
+# cargo build-bpf --manifest-path=programs/fizzdex-solana/Cargo.toml
+```
+
+### Deploy
+
+```bash
+solana program deploy programs/fizzdex-solana/target/deploy/fizzdex_solana.so
+```
+
+Note the **program ID** printed by the deploy command — you will need it for
+the relayer and frontend environment variables (`SOLANA_PROGRAM_ID` /
+`VITE_SOLANA_PROGRAM_ID`).
+
+---
+
+## Relayer Service Deployment
+
+The relayer is an optional Express service that bridges EVM ↔ Solana swap
+events. It listens on port **4001** by default.
+
+> **Security note**: when `RELAYER_SOLANA_KEYPAIR` is configured the relayer
+> becomes an on-chain signer for Solana transactions. Keep it private and use
+> it only for testing or trusted automation. For fully trustless UX, users
+> sign directly with their own wallets through the UI.
+
+### Environment variables (`relayer/.env` or passed at runtime)
+
+| Variable | Required | Description |
+|---|---|---|
+| `RELAYER_PORT` | No | HTTP port (default: `4001`) |
+| `EVM_RPC` | Yes | EVM JSON-RPC endpoint |
+| `FIZZDEX_ADDRESS` | Yes | Deployed FizzDex contract address |
+| `RELAYER_PRIVATE_KEY` | No | EVM signer key for submitting secrets |
+| `RELAYER_SOLANA_KEYPAIR` | No | JSON array of 64 Solana keypair bytes |
+| `RELAYER_API_KEY` | Recommended | Protects POST endpoints with `x-api-key` header |
+| `RELAYER_MAPPINGS_KEY` | Recommended | AES key to encrypt `relayer-mappings.json` |
+| `RELAYER_ALLOW_AUTOCOMPLETE` | No | Auto-complete mapped HTLCs (default: `false`) |
+| `RELAYER_RATE_LIMIT` | No | Max requests/min per IP (default: `60`) |
+| `SOLANA_RPC` | No | Solana RPC endpoint |
+| `SOLANA_PROGRAM_ID` | No | Deployed Solana program ID |
+
+### Initialise mappings file (required before first start)
+
+```bash
+RELAYER_MAPPINGS_KEY="your-strong-key" npm run relayer:init-mappings
+```
+
+This creates an encrypted `relayer-mappings.json` and sets file permissions
+to `600`.
+
+### Run in development
 
 ```bash
 cd relayer
 npm install
-# Provide keys via env. RELAYER_SOLANA_KEYPAIR must be a JSON array of 64 secret bytes for a funded keypair.
-RELAYER_PRIVATE_KEY="0x..." RELAYER_SOLANA_KEYPAIR='[1,2,3,...]' EVM_RPC="http://127.0.0.1:8545" FIZZDEX_ADDRESS="0x..." npm run start
+npm run start
 ```
 
-Relayer endpoints (examples):
-- POST /start-listen — watch EVM `AtomicSwapInitiated`
-- POST /submit-secret { swapId, secret } — submit revealed secret to EVM
-- POST /solana/initiate-htlc { participant, tokenMint, amount, secretHash, timelock } — create Solana HTLC (signed by relayer keypair)
-
-**Security note:** when RELAYER_SOLANA_KEYPAIR is configured the relayer becomes an on‑chain signer for Solana transactions — keep it private and use it only for testing or trusted automation. For full trustless UX, the UI supports Phantom and will be extended to let users sign directly with their wallets.
-
-
-### 1. Run Integration Tests
+### Run in production
 
 ```bash
-npm run test:integration
+cd relayer
+npm run build          # compiles TypeScript → relayer/dist/
+npm run start:prod     # runs relayer/dist/index.js
 ```
 
-### 2. Test Swap
+### Relayer API endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/start-listen` | Start watching EVM `AtomicSwapInitiated` events |
+| `POST` | `/submit-secret` | Submit a revealed secret to EVM (`{ swapId, secret }`) |
+| `POST` | `/solana/initiate-htlc` | Create a Solana HTLC signed by the relayer keypair |
+
+All `POST` endpoints require the `x-api-key: <RELAYER_API_KEY>` header when
+`RELAYER_API_KEY` is set.
+
+---
+
+## Frontend Deployment
+
+The web frontend is a Vite 5 + React 18 single-page application located in
+`web/`.
+
+### Environment variables (`web/.env`)
+
+Copy the template and fill in your values:
 
 ```bash
-npm run test:swap -- --chain ethereum --amount 1000
+cd web
+cp .env.example .env
 ```
-
-### 3. Test Game
 
 ```bash
-npm run test:game -- --chain ethereum --number 15
+# Solana RPC endpoint
+VITE_SOLANA_RPC=https://api.mainnet-beta.solana.com
+
+# Deployed Solana program ID (from the Solana deployment step)
+VITE_SOLANA_PROGRAM_ID=<YOUR_PROGRAM_ID>
+
+# Relayer backend URL
+VITE_RELAYER_URL=https://your-relayer-domain.com
 ```
+
+> **Note**: Vite only exposes variables prefixed with `VITE_` to browser code.
+> Never put private keys or secrets in `web/.env`.
+
+### Build
+
+```bash
+cd web
+npm install
+npm run build   # output in web/dist/
+```
+
+### Vercel (recommended)
+
+The repository includes a `vercel.json` at the root that is pre-configured:
+
+```json
+{
+  "buildCommand": "cd web && npm install && npm run build",
+  "outputDirectory": "web/dist",
+  "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }]
+}
+```
+
+Steps:
+
+1. Import the repository in [vercel.com](https://vercel.com).
+2. Set the `VITE_*` environment variables in the Vercel dashboard under
+   **Settings → Environment Variables**.
+3. Deploy — Vercel will run the build command automatically on every push to
+   the production branch.
+
+### Manual / self-hosted
+
+```bash
+cd web && npm run build
+# Serve web/dist/ with any static file server, e.g. nginx or serve:
+npx serve -s web/dist -l 3000
+```
+
+Configure your web server to rewrite all paths to `index.html` for SPA
+routing (the `vercel.json` rewrites block is the reference).
+
+---
+
+## Docker / Docker Compose
+
+See [`README_DOCKER.md`](../README_DOCKER.md) for full Docker details. Quick
+reference:
+
+### Build the relayer image
+
+```bash
+# Fast build (skips contract compile and web build)
+docker build -t fizzdex:latest \
+  --build-arg SKIP_COMPILE=true \
+  --build-arg SKIP_WEB_BUILD=true .
+```
+
+### Run the relayer container
+
+```bash
+# Using an env file (recommended)
+docker run --rm -p 4001:4001 --env-file .env \
+  -v $(pwd)/relayer-mappings.json:/app/relayer-mappings.json \
+  fizzdex:latest
+
+# Passing individual variables
+docker run --rm -p 4001:4001 \
+  -e RELAYER_PORT=4001 \
+  -e EVM_RPC=http://host.docker.internal:8545 \
+  -e FIZZDEX_ADDRESS=0x... \
+  -e RELAYER_API_KEY=your-key \
+  fizzdex:latest
+```
+
+### Docker Compose (local dev with Ganache)
+
+```bash
+docker compose up --build
+```
+
+This starts a Ganache node on port 8545 and the relayer on port 4001.
+
+### Push to a registry
+
+```bash
+# Docker Hub
+docker login
+docker tag fizzdex:latest youruser/fizzdex:1.0.0
+docker push youruser/fizzdex:1.0.0
+
+# GitHub Container Registry
+echo "$CR_PAT" | docker login ghcr.io -u YOUR_GH_USER --password-stdin
+docker tag fizzdex:latest ghcr.io/YOUR_GH_USER/fizzdex:1.0.0
+docker push ghcr.io/YOUR_GH_USER/fizzdex:1.0.0
+```
+
+---
+
+## Post-Deployment Steps
+
+After contracts are deployed and the stack is running:
+
+1. Record all deployed contract addresses in a safe location.
+2. Transfer contract ownership to a multi-sig wallet.
+3. Verify all contracts on block explorers.
+4. Set `RELAYER_API_KEY` to a strong secret and restart the relayer.
+5. Update the frontend `VITE_RELAYER_URL` to the production relayer endpoint
+   and redeploy.
+6. Create initial liquidity pools and seed them.
+7. Announce the deployment on social media and list on DEX aggregators.
+8. Submit contract addresses to token lists.
+
+---
 
 ## Security Checklist
 
 Before going live, ensure:
 
+- [ ] `.env` files are **not** committed to version control
+- [ ] All private keys are stored in a secrets manager (Vault, AWS KMS,
+      GitHub Secrets), not in plaintext
 - [ ] All contracts are verified on block explorers
-- [ ] Ownership is transferred to multi-sig wallet
-- [ ] Emergency pause is tested and working
-- [ ] Rate limiting is configured
-- [ ] Bug bounty program is active
+- [ ] Ownership is transferred to a multi-sig wallet
+- [ ] Emergency pause mechanism is tested
+- [ ] `RELAYER_API_KEY` is set to a strong, unique value
+- [ ] `RELAYER_ALLOW_AUTOCOMPLETE` is `false` unless explicitly required
+- [ ] `RELAYER_MAPPINGS_KEY` is set to encrypt the mappings file
+- [ ] Rate limiting (`RELAYER_RATE_LIMIT`) is configured
+- [ ] `npm audit` has been run and high-severity findings addressed
 - [ ] Audit reports are published
-- [ ] Insurance coverage is in place (if applicable)
+- [ ] Bug bounty program is active
+
+---
 
 ## Monitoring
 
 Set up monitoring for:
 
-- Transaction volumes
-- Gas prices
+- EVM contract events (`AtomicSwapInitiated`, `AtomicSwapCompleted`, etc.)
+- Relayer health endpoint
 - Pool liquidity levels
-- Game participation
 - Cross-chain bridge status
-- Smart contract events
-- Unusual activity patterns
-
-## Upgrading
-
-FizzDex uses a proxy pattern for upgradability:
-
-```bash
-# Upgrade implementation
-npm run upgrade -- --chain ethereum --new-impl NEW_ADDRESS
-```
-
-## Troubleshooting
-
-### Gas Issues
-- Increase gas limit in hardhat config
-- Use gas price oracle for dynamic pricing
-- Consider L2 deployment for lower fees
-
-### Connection Issues
-- Verify RPC endpoints are active
-- Check firewall settings
-- Use backup RPC providers
-
-### Contract Verification
-- Ensure compiler version matches
-- Include all constructor arguments
-- Use flatten command if needed
-
-## Support
-
-- Documentation: https://fizzdex.io/docs
-- Discord: https://discord.gg/fizzdex
-- GitHub Issues: https://github.com/Unwrenchable/fizzdex/issues
-- Email: support@fizzdex.io
-
-## Deployment Costs (Approximate)
-
-| Chain | Gas Cost | USD (approx) |
-|-------|----------|--------------|
-| Ethereum | 3-5M gas | $100-500 |
-| Polygon | 3-5M gas | $1-5 |
-| BSC | 3-5M gas | $5-20 |
-| Base | 3-5M gas | $5-20 |
-| Arbitrum | 3-5M gas | $10-30 |
-| Solana | 10 SOL | $200-500 |
-
-*Costs vary based on network congestion*
-
-## Next Steps
-
-After successful deployment:
-
-1. Announce deployment on social media
-2. List on DEX aggregators
-3. Submit to token lists
-4. Create trading pairs
-5. Launch liquidity mining program
-6. Integrate with Atomic Fizz Caps game
-7. Apply for grants and partnerships
+- Unusual transaction patterns / large withdrawals
+- Gas price spikes
 
 ---
 
-**Need Help?** Join our Discord community or open a GitHub issue!
+## Troubleshooting
+
+### Contract compilation errors
+
+```bash
+npm run compile-contracts   # not `npm run build` (that compiles the TS SDK)
+```
+
+Make sure `hardhat.config.ts` specifies Solidity `0.8.20`.
+
+### Hardhat can't find the Solidity compiler in CI
+
+Pre-cache the compiler binary or ensure the CI runner has internet access.
+Use Node.js 18.x or 20.x — Node 24 is not supported by Hardhat 2.17.
+
+### Relayer fails to start — `relayer-mappings.json` not found
+
+Run the initialiser before starting the relayer:
+
+```bash
+npm run relayer:init-mappings
+```
+
+### Frontend env vars not picked up
+
+Vite only exposes variables prefixed with `VITE_`. Ensure your `web/.env`
+uses `VITE_SOLANA_RPC`, `VITE_SOLANA_PROGRAM_ID`, and `VITE_RELAYER_URL`.
+Restart the dev server after changing `.env`.
+
+### Gas issues on EVM deployment
+
+- Increase `gasMultiplier` in `hardhat.config.ts` for the target network.
+- Use a gas price oracle for dynamic pricing.
+- Consider deploying to an L2 (Base, Arbitrum) for lower fees.
+
+### RPC / connection issues
+
+- Verify your RPC endpoint is reachable and not rate-limited.
+- Use a paid Alchemy or Infura endpoint for production.
+- Keep backup RPC URLs handy in case of provider outages.
+
+### Solana program deploy fails
+
+- Ensure the deployer wallet has enough SOL for rent and deployment fees.
+- Use devnet for testing (`solana config set --url https://api.devnet.solana.com`).
+- Make sure the Solana BPF toolchain (1.18+) matches the version used to build.
+
+---
+
+## Deployment Costs (Approximate)
+
+| Layer | Chain / Service | Estimated Cost |
+|---|---|---|
+| EVM contracts | Ethereum | 3–5 M gas (~$100–$500) |
+| EVM contracts | Polygon | 3–5 M gas (~$1–$5) |
+| EVM contracts | BSC | 3–5 M gas (~$5–$20) |
+| EVM contracts | Base | 3–5 M gas (~$5–$20) |
+| EVM contracts | Arbitrum | 3–5 M gas (~$10–$30) |
+| Solana program | Solana mainnet | ~10 SOL (~$200–$500) |
+| Frontend | Vercel (Hobby) | Free |
+| Relayer | VPS / container | ~$5–$20/month |
+
+*Costs vary based on network congestion and token prices.*
+
+---
+
+## Support
+
+- **GitHub Issues**: https://github.com/Unwrenchable/FizzSwap/issues
+- **Discord**: https://discord.gg/fizzdex
+- **Documentation**: [docs/README.md](./README.md)
+
+---
+
+**Need help?** Open a GitHub issue or join the Discord community.
