@@ -1,5 +1,7 @@
 import { ethers } from 'ethers';
 import { SolanaAdapter } from './adapters/solana-adapter';
+import { FizzChainAdapter } from './adapters/fizz-chain-adapter';
+import { FIZZ_CHAIN_ID } from './fizz-chain/genesis';
 
 export async function executeRouteHandler(body: any) {
   const { chainId, chainType, inputToken, outputToken, amount, minOutput, chains } = body;
@@ -42,6 +44,28 @@ export async function executeRouteHandler(body: any) {
       await adapter.connect();
       const result = await adapter.executeSwap(inputToken, outputToken, amount, minOutput || '0', 1);
       return { success: true, tx: result.hash, result };
+    }
+
+    if (chainType === 'fizz-hub') {
+      const cfg = (chains || []).find((c: any) => c.chainId === chainId) || {
+        chainId: FIZZ_CHAIN_ID,
+        chainName: 'FizzChain',
+        chainType: 'fizz-hub',
+        rpcUrl: '',
+        nativeCurrency: { name: 'Fizz', symbol: 'FIZZ', decimals: 18 },
+        ...(body.fizzChainConfig || {}),
+      };
+
+      const adapter = new FizzChainAdapter(cfg);
+      await adapter.connect();
+      const result = await adapter.executeSwap(
+        inputToken,
+        outputToken,
+        amount,
+        minOutput || '0',
+        1
+      );
+      return { success: result.success, tx: result.hash, result };
     }
 
     throw { status: 400, message: 'Unsupported chainType' };
