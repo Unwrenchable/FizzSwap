@@ -381,6 +381,162 @@ app.post('/solana/complete-htlc', async (req, res) => {
   }
 });
 
+// -------------------------
+// Bitcoin HTLC helper endpoints
+// -------------------------
+import { buildHtlcScript, htlcP2wshAddress } from './adapters/bitcoin-adapter';
+import * as btcLib from 'bitcoinjs-lib';
+
+const BITCOIN_ESPLORA =
+  process.env.BITCOIN_ESPLORA_URL ||
+  (process.env.BITCOIN_NETWORK === 'testnet'
+    ? 'https://blockstream.info/testnet/api'
+    : 'https://blockstream.info/api');
+
+const btcNetwork =
+  process.env.BITCOIN_NETWORK === 'testnet'
+    ? btcLib.networks.testnet
+    : btcLib.networks.bitcoin;
+
+const BITCOIN_DEFAULT_HTLC_TIMELOCK_SECONDS = 7200;
+
+/**
+ * POST /bitcoin/initiate-htlc
+ *
+ * Body: { participantPubKey, initiatorPubKey, secretHash, timelock?, evmSwapId? }
+ *   - participantPubKey  hex-encoded 33-byte compressed public key of the swap recipient
+ *   - initiatorPubKey   hex-encoded 33-byte compressed public key of the swap initiator
+ *   - secretHash        32-byte SHA-256 hash of the atomic-swap secret (hex, no 0x prefix)
+ *   - timelock          optional UNIX timestamp for refund path (defaults to now + 7200 s)
+ *   - evmSwapId         optional EVM swap ID to link into the relayer mapping table
+ *
+ * Response: { htlcAddress, redeemScript, secretHash, timelock }
+ *   The caller must send exactly `amount` satoshis to htlcAddress to fund the HTLC.
+ */
+app.post('/bitcoin/initiate-htlc', (req, res) => {
+  const { participantPubKey, initiatorPubKey, secretHash, timelock: rawTimelock, evmSwapId } = req.body;
+  if (!participantPubKey || !initiatorPubKey || !secretHash) {
+    return res.status(400).json({ error: 'participantPubKey, initiatorPubKey, secretHash required' });
+  }
+
+  const secretHashClean = String(secretHash).replace(/^0x/, '');
+  if (!/^[0-9a-fA-F]{64}$/.test(secretHashClean)) {
+    return res.status(400).json({ error: 'secretHash must be a 32-byte hex string (64 hex chars)' });
+  }
+
+  try {
+    const timelock = rawTimelock ? Number(rawTimelock) : Math.floor(Date.now() / 1000) + BITCOIN_DEFAULT_HTLC_TIMELOCK_SECONDS;
+    const redeemScript = buildHtlcScript(secretHashClean, participantPubKey, initiatorPubKey, timelock);
+    const htlcAddress = htlcP2wshAddress(redeemScript, btcNetwork);
+
+    if (evmSwapId) {
+      // MappingEntry field names are shared across chains; for Bitcoin:
+      //   atomicSwapPda  → P2WSH HTLC address
+      //   escrowVaultPda → hex-encoded redeem script
+      //   tokenMint      → 'BTC'
+      relayerMappings[evmSwapId] = {
+        atomicSwapPda: htlcAddress,
+        escrowVaultPda: redeemScript.toString('hex'),
+        tokenMint: 'BTC',
+        participant: participantPubKey,
+      };
+      try { saveMappings(); } catch (e) { console.warn('[Relayer] failed to persist BTC mapping', e); }
+    }
+
+    return res.json({
+      success: true,
+      htlcAddress,
+      redeemScript: redeemScript.toString('hex'),
+      secretHash: secretHashClean,
+      timelock,
+      network: process.env.BITCOIN_NETWORK || 'mainnet',
+    });
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || String(err) });
+  }
+});
+
+/**
+ * POST /bitcoin/complete-htlc
+ *
+ * Spend a funded Bitcoin P2WSH HTLC using the secret preimage.
+ * The relayer signs the spending transaction using BITCOIN_WIF.
+ *
+ * Body: { txid, vout, amountSats, redeemScript, secret, recipientAddress }
+ *   - txid             Funding transaction ID
+ *   - vout             Output index in the funding transaction
+ *   - amountSats       Value of the HTLC output (satoshis)
+ *   - redeemScript     Hex-encoded redeem script (from /bitcoin/initiate-htlc response)
+ *   - secret           32-byte secret preimage (hex)
+ *   - recipientAddress Bech32 (P2WPKH) address to receive the funds
+ */
+app.post('/bitcoin/complete-htlc', async (req, res) => {
+  const { txid, vout, amountSats, redeemScript: redeemScriptHex, secret, recipientAddress } = req.body;
+  if (!txid || vout === undefined || !amountSats || !redeemScriptHex || !secret || !recipientAddress) {
+    return res.status(400).json({ error: 'txid, vout, amountSats, redeemScript, secret, recipientAddress required' });
+  }
+
+  if (!process.env.BITCOIN_WIF) return res.status(500).json({ error: 'BITCOIN_WIF not configured' });
+
+  const { BitcoinAdapter } = require('./adapters/bitcoin-adapter');
+  const adapter = new BitcoinAdapter({
+    chainId: 'bitcoin',
+    chainName: 'Bitcoin',
+    chainType: 'bitcoin',
+    rpcUrl: BITCOIN_ESPLORA,
+    nativeCurrency: { name: 'Bitcoin', symbol: 'BTC', decimals: 8 },
+  });
+
+  const bridgeId = `${txid}:${vout}:${amountSats}:${redeemScriptHex}:${recipientAddress}`;
+  try {
+    const result = await adapter.completeBridge(bridgeId, String(secret).replace(/^0x/, ''));
+    return res.json({ success: result.success, txHash: result.hash, error: result.error });
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || String(err) });
+  }
+});
+
+/**
+ * GET /bitcoin/htlc-status/:address
+ *
+ * Check whether a Bitcoin P2WSH HTLC address has been funded and/or spent.
+ * Uses the Blockstream Esplora API (no local node required).
+ */
+app.get('/bitcoin/htlc-status/:address', async (req, res) => {
+  const { address } = req.params;
+  if (!address) return res.status(400).json({ error: 'address required' });
+
+  const esploraFetch = (url: string): Promise<any> =>
+    new Promise((resolve, reject) => {
+      const lib = url.startsWith('https') ? require('https') : require('http');
+      lib.get(url, (r: any) => {
+        let d = '';
+        r.on('data', (c: any) => (d += c));
+        r.on('end', () => { try { resolve(JSON.parse(d)); } catch { resolve(d); } });
+      }).on('error', reject);
+    });
+
+  try {
+    const [addrInfo, utxos] = await Promise.all([
+      esploraFetch(`${BITCOIN_ESPLORA}/address/${address}`),
+      esploraFetch(`${BITCOIN_ESPLORA}/address/${address}/utxo`),
+    ]);
+
+    const funded = addrInfo?.chain_stats?.funded_txo_sum ?? 0;
+    const spent = addrInfo?.chain_stats?.spent_txo_sum ?? 0;
+    return res.json({
+      address,
+      funded_sats: funded,
+      spent_sats: spent,
+      balance_sats: funded - spent,
+      utxos: utxos || [],
+      status: spent > 0 ? 'completed' : funded > 0 ? 'funded' : 'unfunded',
+    });
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || String(err) });
+  }
+});
+
 // mappings inspection endpoints
 app.get('/mappings', (req, res) => {
   // Protect mappings endpoint when RELAYER_API_KEY is configured

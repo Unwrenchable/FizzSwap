@@ -1,8 +1,22 @@
 # FizzSwap — Multi-Chain DEX
 
-FizzSwap is the official DEX for the [ATOMIC-FIZZ-CAPS-VAULT-77-WASTELAND-GPS](https://github.com/Unwrenchable/ATOMIC-FIZZ-CAPS-VAULT-77-WASTELAND-GPS) ecosystem. It supports atomic swaps across EVM chains and Solana.
+FizzSwap is the official DEX for the [ATOMIC-FIZZ-CAPS-VAULT-77-WASTELAND-GPS](https://github.com/Unwrenchable/ATOMIC-FIZZ-CAPS-VAULT-77-WASTELAND-GPS) ecosystem. It supports atomic swaps across EVM chains, Solana, and Bitcoin via Hash Time-Locked Contracts (HTLCs).
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+---
+
+## Supported Chains
+
+| Chain | Type | Status | Notes |
+|-------|------|--------|-------|
+| Ethereum / EVM | `evm` | ✅ Full | On-chain FizzDex contract + HTLC |
+| Solana | `solana` | ✅ Full | Anchor program + SPL-Token HTLC |
+| Bitcoin | `bitcoin` | ✅ Full | P2WSH HTLC via Blockstream API |
+| Cosmos / others | `cosmos`, `other` | 🔧 Pluggable | Add adapter via `ChainAdapterFactory` |
+
+Adding a new chain takes a single adapter class that implements `IChainAdapter`
+(see `relayer/src/chain-adapter.ts`). Register it with `ChainAdapterFactory.registerAdapter(type, Class)`.
 
 ---
 
@@ -109,6 +123,28 @@ See [`.env.example`](./.env.example) for the full list. Key variables:
 | `SOLANA_PROGRAM_ID` | Deployed Solana program ID |
 | `RELAYER_PRIVATE_KEY` | EVM signer private key (**never commit**) |
 | `RELAYER_SOLANA_KEYPAIR` | Solana keypair JSON array (**never commit**) |
+| `BITCOIN_WIF` | Bitcoin WIF private key for HTLC signing (**never commit**) |
+| `BITCOIN_NETWORK` | `mainnet` or `testnet` (default: `mainnet`) |
+| `BITCOIN_ESPLORA_URL` | Blockstream API base URL (auto-detected from `BITCOIN_NETWORK`) |
+
+### Bitcoin HTLC endpoints
+
+| Endpoint | Description |
+|----------|-------------|
+| `POST /bitcoin/initiate-htlc` | Derive a P2WSH HTLC address from a secret hash and two public keys |
+| `POST /bitcoin/complete-htlc` | Spend a funded HTLC by revealing the secret preimage |
+| `GET /bitcoin/htlc-status/:address` | Query funding/completion status of an HTLC address via Esplora |
+
+**How Bitcoin ↔ EVM/Solana atomic swaps work:**
+
+```
+1. Both parties agree on a 32-byte secret (hash = SHA-256 of secret).
+2. EVM/Solana side: user calls FizzDex.initiateAtomicSwap(secretHash, ...).
+3. Bitcoin side: relayer POST /bitcoin/initiate-htlc with secretHash + pubkeys.
+4. Counterparty funds the P2WSH address returned by step 3.
+5. Initiator reveals the secret on one chain, the counterparty uses it to claim on the other.
+6. POST /bitcoin/complete-htlc with the revealed secret broadcasts the Bitcoin spend tx.
+```
 
 ---
 
