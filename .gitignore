@@ -16,3 +16,6 @@ coverage/
 *~
 .vscode/
 .idea/
+
+# FizzChain runtime state
+fizz-chain-state.json

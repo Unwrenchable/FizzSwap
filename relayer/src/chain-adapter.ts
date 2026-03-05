@@ -9,7 +9,7 @@
 export interface ChainConfig {
   chainId: string;
   chainName: string;
-  chainType: 'evm' | 'solana' | 'cosmos' | 'substrate' | 'xrp' | 'other';
+  chainType: 'evm' | 'solana' | 'bitcoin' | 'fizz-hub' | 'cosmos' | 'substrate' | 'xrp' | 'other';
   rpcUrl: string;
   nativeCurrency: {
     name: string;
@@ -158,11 +158,15 @@ export class ChainAdapterFactory {
   }
 }
 
-// Register built-in adapters (EVM + Solana)
+// Register built-in adapters (EVM + Solana + Bitcoin + FizzChain hub)
 import { EvmAdapter } from "./adapters/evm-adapter";
 import { SolanaAdapter } from "./adapters/solana-adapter";
+import { BitcoinAdapter } from "./adapters/bitcoin-adapter";
+import { FizzChainAdapter } from "./adapters/fizz-chain-adapter";
 ChainAdapterFactory.registerAdapter('evm', EvmAdapter);
 ChainAdapterFactory.registerAdapter('solana', SolanaAdapter);
+ChainAdapterFactory.registerAdapter('bitcoin', BitcoinAdapter);
+ChainAdapterFactory.registerAdapter('fizz-hub', FizzChainAdapter);
  
 
 /**
@@ -310,6 +314,15 @@ export class SecurityUtils {
    */
   static validateAddress(address: string, chainType: string): boolean {
     switch (chainType) {
+      case 'fizz-hub':
+        // FizzChain native addresses start with "fizz1" and are 39 chars total (bech32-style)
+        return /^fizz1[a-z0-9]{32,}$/.test(address);
+      case 'bitcoin':
+        // P2PKH (1...), P2SH (3...), bech32 P2WPKH/P2WSH (bc1...) and testnet equivalents
+        return /^(1|3)[a-km-zA-HJ-NP-Z1-9]{25,34}$/.test(address) ||
+               /^bc1[a-z0-9]{6,87}$/.test(address) ||
+               /^(m|n|2)[a-km-zA-HJ-NP-Z1-9]{25,34}$/.test(address) ||
+               /^tb1[a-z0-9]{6,87}$/.test(address);
       case 'evm':
         return /^0x[a-fA-F0-9]{40}$/.test(address);
       case 'solana':

@@ -381,6 +381,162 @@ app.post('/solana/complete-htlc', async (req, res) => {
   }
 });
 
+// -------------------------
+// Bitcoin HTLC helper endpoints
+// -------------------------
+import { buildHtlcScript, htlcP2wshAddress } from './adapters/bitcoin-adapter';
+import * as btcLib from 'bitcoinjs-lib';
+
+const BITCOIN_ESPLORA =
+  process.env.BITCOIN_ESPLORA_URL ||
+  (process.env.BITCOIN_NETWORK === 'testnet'
+    ? 'https://blockstream.info/testnet/api'
+    : 'https://blockstream.info/api');
+
+const btcNetwork =
+  process.env.BITCOIN_NETWORK === 'testnet'
+    ? btcLib.networks.testnet
+    : btcLib.networks.bitcoin;
+
+const BITCOIN_DEFAULT_HTLC_TIMELOCK_SECONDS = 7200;
+
+/**
+ * POST /bitcoin/initiate-htlc
+ *
+ * Body: { participantPubKey, initiatorPubKey, secretHash, timelock?, evmSwapId? }
+ *   - participantPubKey  hex-encoded 33-byte compressed public key of the swap recipient
+ *   - initiatorPubKey   hex-encoded 33-byte compressed public key of the swap initiator
+ *   - secretHash        32-byte SHA-256 hash of the atomic-swap secret (hex, no 0x prefix)
+ *   - timelock          optional UNIX timestamp for refund path (defaults to now + 7200 s)
+ *   - evmSwapId         optional EVM swap ID to link into the relayer mapping table
+ *
+ * Response: { htlcAddress, redeemScript, secretHash, timelock }
+ *   The caller must send exactly `amount` satoshis to htlcAddress to fund the HTLC.
+ */
+app.post('/bitcoin/initiate-htlc', (req, res) => {
+  const { participantPubKey, initiatorPubKey, secretHash, timelock: rawTimelock, evmSwapId } = req.body;
+  if (!participantPubKey || !initiatorPubKey || !secretHash) {
+    return res.status(400).json({ error: 'participantPubKey, initiatorPubKey, secretHash required' });
+  }
+
+  const secretHashClean = String(secretHash).replace(/^0x/, '');
+  if (!/^[0-9a-fA-F]{64}$/.test(secretHashClean)) {
+    return res.status(400).json({ error: 'secretHash must be a 32-byte hex string (64 hex chars)' });
+  }
+
+  try {
+    const timelock = rawTimelock ? Number(rawTimelock) : Math.floor(Date.now() / 1000) + BITCOIN_DEFAULT_HTLC_TIMELOCK_SECONDS;
+    const redeemScript = buildHtlcScript(secretHashClean, participantPubKey, initiatorPubKey, timelock);
+    const htlcAddress = htlcP2wshAddress(redeemScript, btcNetwork);
+
+    if (evmSwapId) {
+      // MappingEntry field names are shared across chains; for Bitcoin:
+      //   atomicSwapPda  → P2WSH HTLC address
+      //   escrowVaultPda → hex-encoded redeem script
+      //   tokenMint      → 'BTC'
+      relayerMappings[evmSwapId] = {
+        atomicSwapPda: htlcAddress,
+        escrowVaultPda: redeemScript.toString('hex'),
+        tokenMint: 'BTC',
+        participant: participantPubKey,
+      };
+      try { saveMappings(); } catch (e) { console.warn('[Relayer] failed to persist BTC mapping', e); }
+    }
+
+    return res.json({
+      success: true,
+      htlcAddress,
+      redeemScript: redeemScript.toString('hex'),
+      secretHash: secretHashClean,
+      timelock,
+      network: process.env.BITCOIN_NETWORK || 'mainnet',
+    });
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || String(err) });
+  }
+});
+
+/**
+ * POST /bitcoin/complete-htlc
+ *
+ * Spend a funded Bitcoin P2WSH HTLC using the secret preimage.
+ * The relayer signs the spending transaction using BITCOIN_WIF.
+ *
+ * Body: { txid, vout, amountSats, redeemScript, secret, recipientAddress }
+ *   - txid             Funding transaction ID
+ *   - vout             Output index in the funding transaction
+ *   - amountSats       Value of the HTLC output (satoshis)
+ *   - redeemScript     Hex-encoded redeem script (from /bitcoin/initiate-htlc response)
+ *   - secret           32-byte secret preimage (hex)
+ *   - recipientAddress Bech32 (P2WPKH) address to receive the funds
+ */
+app.post('/bitcoin/complete-htlc', async (req, res) => {
+  const { txid, vout, amountSats, redeemScript: redeemScriptHex, secret, recipientAddress } = req.body;
+  if (!txid || vout === undefined || !amountSats || !redeemScriptHex || !secret || !recipientAddress) {
+    return res.status(400).json({ error: 'txid, vout, amountSats, redeemScript, secret, recipientAddress required' });
+  }
+
+  if (!process.env.BITCOIN_WIF) return res.status(500).json({ error: 'BITCOIN_WIF not configured' });
+
+  const { BitcoinAdapter } = require('./adapters/bitcoin-adapter');
+  const adapter = new BitcoinAdapter({
+    chainId: 'bitcoin',
+    chainName: 'Bitcoin',
+    chainType: 'bitcoin',
+    rpcUrl: BITCOIN_ESPLORA,
+    nativeCurrency: { name: 'Bitcoin', symbol: 'BTC', decimals: 8 },
+  });
+
+  const bridgeId = `${txid}:${vout}:${amountSats}:${redeemScriptHex}:${recipientAddress}`;
+  try {
+    const result = await adapter.completeBridge(bridgeId, String(secret).replace(/^0x/, ''));
+    return res.json({ success: result.success, txHash: result.hash, error: result.error });
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || String(err) });
+  }
+});
+
+/**
+ * GET /bitcoin/htlc-status/:address
+ *
+ * Check whether a Bitcoin P2WSH HTLC address has been funded and/or spent.
+ * Uses the Blockstream Esplora API (no local node required).
+ */
+app.get('/bitcoin/htlc-status/:address', async (req, res) => {
+  const { address } = req.params;
+  if (!address) return res.status(400).json({ error: 'address required' });
+
+  const esploraFetch = (url: string): Promise<any> =>
+    new Promise((resolve, reject) => {
+      const lib = url.startsWith('https') ? require('https') : require('http');
+      lib.get(url, (r: any) => {
+        let d = '';
+        r.on('data', (c: any) => (d += c));
+        r.on('end', () => { try { resolve(JSON.parse(d)); } catch { resolve(d); } });
+      }).on('error', reject);
+    });
+
+  try {
+    const [addrInfo, utxos] = await Promise.all([
+      esploraFetch(`${BITCOIN_ESPLORA}/address/${address}`),
+      esploraFetch(`${BITCOIN_ESPLORA}/address/${address}/utxo`),
+    ]);
+
+    const funded = addrInfo?.chain_stats?.funded_txo_sum ?? 0;
+    const spent = addrInfo?.chain_stats?.spent_txo_sum ?? 0;
+    return res.json({
+      address,
+      funded_sats: funded,
+      spent_sats: spent,
+      balance_sats: funded - spent,
+      utxos: utxos || [],
+      status: spent > 0 ? 'completed' : funded > 0 ? 'funded' : 'unfunded',
+    });
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || String(err) });
+  }
+});
+
 // mappings inspection endpoints
 app.get('/mappings', (req, res) => {
   // Protect mappings endpoint when RELAYER_API_KEY is configured
@@ -411,5 +567,447 @@ app.listen(PORT, () => {
     startWorker();
   } catch (e) {
     console.warn('[Relayer] failed to start worker', e);
+  }
+  // Start FizzChain auto-miner (respects FIZZ_CHAIN_AUTO_MINE env var)
+  try {
+    startAutoMiner();
+  } catch (e) {
+    console.warn('[FizzChain] failed to start auto-miner', e);
+  }
+  // Save state on clean shutdown (stop miner first to avoid race)
+  const shutdown = () => {
+    try { stopAutoMiner(); } catch (_) {}
+    try { saveState(fizzChainState); } catch (_) {}
+    process.exit(0);
+  };
+  process.on('SIGTERM', shutdown);
+  process.on('SIGINT',  shutdown);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FizzChain hub endpoints
+//
+// FizzChain is the user's own custom blockchain — a multichain in itself —
+// using hybrid PoW + PoS consensus with the FIZZ native token as the hub
+// currency routing swaps across EVM, Solana, and Bitcoin.
+// ─────────────────────────────────────────────────────────────────────────────
+import { fizzChainState } from './fizz-chain/state';
+import { mine, computeMerkleRoot, verifyPoW } from './fizz-chain/pow';
+import { FIZZ_CHAIN_ID, CONSENSUS_PARAMS as FIZZ_CONSENSUS } from './fizz-chain/genesis';
+import { fizzEvents, EVENTS } from './fizz-chain/events';
+import { startAutoMiner, stopAutoMiner, isMinerRunning, getMinerConfig } from './fizz-chain/miner';
+import { saveState } from './fizz-chain/persist';
+
+/**
+ * GET /fizz-chain/info
+ * Returns FizzChain metadata: height, consensus params, validator count, pools.
+ */
+app.get('/fizz-chain/info', (_req, res) => {
+  res.json(fizzChainState.chainInfo());
+});
+
+/**
+ * GET /fizz-chain/block/latest
+ * Returns the most recently finalized block.
+ */
+app.get('/fizz-chain/block/latest', (_req, res) => {
+  res.json(fizzChainState.latestBlock);
+});
+
+/**
+ * GET /fizz-chain/block/:height
+ * Returns the block at a specific height.
+ */
+app.get('/fizz-chain/block/:height', (req, res) => {
+  const h = Number(req.params.height);
+  if (isNaN(h) || h < 0) return res.status(400).json({ error: 'height must be a non-negative integer' });
+  const block = fizzChainState.blocks[h];
+  if (!block) return res.status(404).json({ error: `Block ${h} not found` });
+  res.json(block);
+});
+
+/**
+ * GET /fizz-chain/balance/:address
+ * Returns the FIZZ balance of a FizzChain address.
+ * Optionally pass ?token=WETH to query a non-native token balance.
+ */
+app.get('/fizz-chain/balance/:address', (req, res) => {
+  const { address } = req.params;
+  const token = (req.query.token as string) || 'FIZZ';
+  if (token === 'FIZZ') {
+    return res.json({ address, token: 'FIZZ', balance: fizzChainState.getBalance(address).toString() });
+  }
+  const key = `${token}:${address}`;
+  const balance = fizzChainState.balances.get(key) ?? 0n;
+  return res.json({ address, token, balance: balance.toString() });
+});
+
+/**
+ * GET /fizz-chain/pools
+ * Returns all AMM pool states (FIZZ-paired).
+ */
+app.get('/fizz-chain/pools', (_req, res) => {
+  const pools = fizzChainState.getPools().map(p => ({
+    tokenA: p.tokenA,
+    tokenB: p.tokenB,
+    reserveA: p.reserveA.toString(),
+    reserveB: p.reserveB.toString(),
+    decimalsA: p.decimalsA,
+    decimalsB: p.decimalsB,
+    totalShares: p.totalShares.toString(),
+  }));
+  res.json({ count: pools.length, pools });
+});
+
+/**
+ * GET /fizz-chain/validators
+ * Returns all PoS validators with stake and activity info.
+ */
+app.get('/fizz-chain/validators', (_req, res) => {
+  res.json(fizzChainState.validators.toJSON());
+});
+
+/**
+ * POST /fizz-chain/quote
+ * Get a swap quote on FizzChain without executing.
+ *
+ * Body: { tokenIn, tokenOut, amountIn }
+ */
+app.post('/fizz-chain/quote', (req, res) => {
+  const { tokenIn, tokenOut, amountIn } = req.body;
+  if (!tokenIn || !tokenOut || !amountIn) {
+    return res.status(400).json({ error: 'tokenIn, tokenOut, amountIn required' });
+  }
+  try {
+    const { amountOut, priceImpact, fee } = fizzChainState.getSwapQuote(tokenIn, tokenOut, amountIn);
+    return res.json({
+      tokenIn,
+      tokenOut,
+      amountIn,
+      amountOut: amountOut.toString(),
+      priceImpact,
+      fee: fee.toString(),
+      chain: FIZZ_CHAIN_ID,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || String(err) });
+  }
+});
+
+/**
+ * POST /fizz-chain/swap
+ * Execute a FizzChain AMM swap.
+ *
+ * Body: { from, tokenIn, tokenOut, amountIn, minAmountOut? }
+ */
+app.post('/fizz-chain/swap', (req, res) => {
+  const { from, tokenIn, tokenOut, amountIn, minAmountOut } = req.body;
+  if (!from || !tokenIn || !tokenOut || !amountIn) {
+    return res.status(400).json({ error: 'from, tokenIn, tokenOut, amountIn required' });
+  }
+  try {
+    const { amountOut, txId } = fizzChainState.swap(from, tokenIn, tokenOut, amountIn, minAmountOut || '0');
+    return res.json({ success: true, txId, amountOut: amountOut.toString(), chain: FIZZ_CHAIN_ID });
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || String(err) });
+  }
+});
+
+/**
+ * POST /fizz-chain/add-liquidity
+ * Add liquidity to a FizzChain AMM pool.
+ *
+ * Body: { provider, tokenA, tokenB, amountA, amountB }
+ */
+app.post('/fizz-chain/add-liquidity', (req, res) => {
+  const { provider, tokenA, tokenB, amountA, amountB } = req.body;
+  if (!provider || !tokenA || !tokenB || !amountA || !amountB) {
+    return res.status(400).json({ error: 'provider, tokenA, tokenB, amountA, amountB required' });
+  }
+  try {
+    const { shares, txId } = fizzChainState.addLiquidity(provider, tokenA, tokenB, amountA, amountB);
+    return res.json({ success: true, txId, shares: shares.toString() });
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || String(err) });
+  }
+});
+
+/**
+ * POST /fizz-chain/transfer
+ * Transfer FIZZ between FizzChain addresses.
+ *
+ * Body: { from, to, amount }
+ */
+app.post('/fizz-chain/transfer', (req, res) => {
+  const { from, to, amount } = req.body;
+  if (!from || !to || !amount) {
+    return res.status(400).json({ error: 'from, to, amount required' });
+  }
+  try {
+    const txId = fizzChainState.transfer(from, to, amount);
+    return res.json({ success: true, txId });
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || String(err) });
+  }
+});
+
+/**
+ * POST /fizz-chain/stake
+ * Stake FIZZ to become a PoS validator (or increase an existing stake).
+ *
+ * Body: { address, amount, name? }
+ */
+app.post('/fizz-chain/stake', (req, res) => {
+  const { address, amount, name } = req.body;
+  if (!address || !amount) {
+    return res.status(400).json({ error: 'address and amount required' });
+  }
+  try {
+    const txId = fizzChainState.stakeForValidator(address, amount, name);
+    const v = fizzChainState.validators.getValidator(address);
+    return res.json({
+      success: true,
+      txId,
+      validator: v
+        ? { ...v, stake: v.stake.toString(), totalRewards: v.totalRewards.toString() }
+        : null,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || String(err) });
+  }
+});
+
+/**
+ * POST /fizz-chain/unstake
+ * Unstake FIZZ from the PoS validator registry.
+ *
+ * Body: { address, amount }
+ */
+app.post('/fizz-chain/unstake', (req, res) => {
+  const { address, amount } = req.body;
+  if (!address || !amount) {
+    return res.status(400).json({ error: 'address and amount required' });
+  }
+  try {
+    const txId = fizzChainState.unstakeFromValidator(address, amount);
+    const v = fizzChainState.validators.getValidator(address);
+    return res.json({
+      success: true,
+      txId,
+      validator: v
+        ? { ...v, stake: v.stake.toString(), totalRewards: v.totalRewards.toString() }
+        : null,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || String(err) });
+  }
+});
+
+/**
+ * POST /fizz-chain/mine
+ *
+ * Two usage modes:
+ *
+ * Mode A — External miner submits a solved block:
+ *   Body: { block: MinedBlock }   (pre-solved by an external miner)
+ *
+ * Mode B — Ask the relayer to mine in-process:
+ *   Body: { miner: string }       (relayer runs the PoW search itself)
+ *
+ * In both cases the block goes through PoW verification and PoS finalization
+ * before being appended to the ledger.
+ *
+ * Rate-limited to 2 in-process mine requests per IP per minute because PoW
+ * is computationally intensive and running many concurrent searches would
+ * exhaust relayer CPU.
+ */
+const mineRateMap = new Map<string, { count: number; resetTs: number }>();
+const MINE_RATE_LIMIT = 2; // max in-process mine calls per IP per minute
+
+app.post('/fizz-chain/mine', async (req, res) => {
+  // Per-IP rate limit for the computationally expensive in-process mining path
+  const ip = (req.ip || req.headers['x-forwarded-for'] || 'unknown') as string;
+  const now = Date.now();
+  const mineEntry = mineRateMap.get(ip) || { count: 0, resetTs: now + 60_000 };
+  if (now > mineEntry.resetTs) { mineEntry.count = 0; mineEntry.resetTs = now + 60_000; }
+  mineEntry.count += 1;
+  mineRateMap.set(ip, mineEntry);
+  if (mineEntry.count > MINE_RATE_LIMIT) {
+    return res.status(429).json({ error: 'Mine rate limit exceeded — maximum 2 in-process mine calls per minute per IP' });
+  }
+
+  try {
+    const { block: submittedBlock, miner: minerAddress } = req.body;
+
+    if (submittedBlock) {
+      // Mode A: validate and finalize an externally-mined block
+      if (!verifyPoW(submittedBlock)) {
+        return res.status(400).json({ error: 'Invalid PoW solution' });
+      }
+      const finalBlock = fizzChainState.submitPoW(submittedBlock);
+      return res.json({ success: true, block: finalBlock });
+    }
+
+    // Mode B: mine in-process
+    const miner = minerAddress || 'fizz1relayer00000000000000000000000000000000';
+    const tip = fizzChainState.latestBlock;
+    const txStrings = fizzChainState.mempool.map(t => JSON.stringify(t));
+    const merkleRoot = computeMerkleRoot(txStrings);
+
+    const candidate = {
+      height: fizzChainState.height + 1,
+      parentHash: tip.hash,
+      merkleRoot,
+      timestamp: Date.now(),
+      difficulty: fizzChainState.currentDifficulty,
+      miner,
+    };
+
+    const mined = mine(candidate);
+    if (!mined) {
+      return res.status(503).json({
+        error: `PoW search exhausted (difficulty=${candidate.difficulty}, maxNonce=${FIZZ_CONSENSUS.maxNonce}). Retry or lower difficulty.`,
+      });
+    }
+
+    const finalBlock = fizzChainState.submitPoW(mined);
+    return res.json({ success: true, block: finalBlock });
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || String(err) });
+  }
+});
+
+/**
+ * POST /fizz-chain/bridge-in
+ * Record an inbound bridge event (tokens arriving from EVM/Solana/Bitcoin).
+ * In production this is called automatically by the relayer worker after HTLC reveal.
+ *
+ * Body: { to, token, amount, sourceChain }
+ */
+app.post('/fizz-chain/bridge-in', (req, res) => {
+  const { to, token, amount, sourceChain } = req.body;
+  if (!to || !token || !amount || !sourceChain) {
+    return res.status(400).json({ error: 'to, token, amount, sourceChain required' });
+  }
+  try {
+    const txId = fizzChainState.bridgeIn(to, token, amount, sourceChain);
+    return res.json({ success: true, txId });
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || String(err) });
+  }
+});
+
+/**
+ * POST /fizz-chain/bridge-out
+ * Lock tokens on FizzChain to initiate a bridge to an external chain.
+ *
+ * Body: { from, token, amount, targetChain }
+ */
+app.post('/fizz-chain/bridge-out', (req, res) => {
+  const { from, token, amount, targetChain } = req.body;
+  if (!from || !token || !amount || !targetChain) {
+    return res.status(400).json({ error: 'from, token, amount, targetChain required' });
+  }
+  try {
+    const txId = fizzChainState.bridgeOut(from, token, amount, targetChain);
+    return res.json({ success: true, txId });
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || String(err) });
+  }
+});
+
+/**
+ * GET /fizz-chain/events
+ *
+ * Server-Sent Events (SSE) stream for real-time FizzChain notifications.
+ *
+ * Connect with:
+ *   const es = new EventSource('http://localhost:4001/fizz-chain/events');
+ *   es.addEventListener('block', e => console.log(JSON.parse(e.data)));
+ *   es.addEventListener('swap',  e => console.log(JSON.parse(e.data)));
+ *
+ * Event types: block | tx | swap | bridge | miner
+ *
+ * Clients receive a heartbeat comment every 15 s to keep the connection alive
+ * through proxies and load balancers.
+ */
+app.get('/fizz-chain/events', (req, res) => {
+  res.setHeader('Content-Type',  'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection',    'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no'); // disable nginx buffering
+  res.flushHeaders();
+
+  // Helper to send an SSE event
+  const send = (eventName: string, data: any) => {
+    res.write(`event: ${eventName}\ndata: ${JSON.stringify(data)}\n\n`);
+  };
+
+  // Send initial state so client is immediately useful
+  send('info', fizzChainState.chainInfo());
+
+  // Subscribe to all FizzChain events
+  const onBlock  = (p: any) => send(EVENTS.BLOCK,  p);
+  const onTx     = (p: any) => send(EVENTS.TX,     p);
+  const onSwap   = (p: any) => send(EVENTS.SWAP,   p);
+  const onBridge = (p: any) => send(EVENTS.BRIDGE, p);
+  const onMiner  = (p: any) => send(EVENTS.MINER,  p);
+
+  fizzEvents.on(EVENTS.BLOCK,  onBlock);
+  fizzEvents.on(EVENTS.TX,     onTx);
+  fizzEvents.on(EVENTS.SWAP,   onSwap);
+  fizzEvents.on(EVENTS.BRIDGE, onBridge);
+  fizzEvents.on(EVENTS.MINER,  onMiner);
+
+  // Heartbeat every 15 s
+  const heartbeat = setInterval(() => { res.write(':heartbeat\n\n'); }, 15_000);
+
+  // Cleanup on disconnect
+  req.on('close', () => {
+    clearInterval(heartbeat);
+    fizzEvents.off(EVENTS.BLOCK,  onBlock);
+    fizzEvents.off(EVENTS.TX,     onTx);
+    fizzEvents.off(EVENTS.SWAP,   onSwap);
+    fizzEvents.off(EVENTS.BRIDGE, onBridge);
+    fizzEvents.off(EVENTS.MINER,  onMiner);
+  });
+});
+
+/**
+ * GET /fizz-chain/miner
+ * Returns the current auto-miner configuration and status.
+ */
+app.get('/fizz-chain/miner', (_req, res) => {
+  res.json(getMinerConfig());
+});
+
+/**
+ * POST /fizz-chain/miner/start
+ * Start the auto-miner (if stopped).
+ */
+app.post('/fizz-chain/miner/start', (_req, res) => {
+  startAutoMiner();
+  res.json({ success: true, running: isMinerRunning(), config: getMinerConfig() });
+});
+
+/**
+ * POST /fizz-chain/miner/stop
+ * Stop the auto-miner.
+ */
+app.post('/fizz-chain/miner/stop', (_req, res) => {
+  stopAutoMiner();
+  res.json({ success: true, running: isMinerRunning() });
+});
+
+/**
+ * POST /fizz-chain/snapshot
+ * Force-save the current chain state to disk immediately.
+ */
+app.post('/fizz-chain/snapshot', (_req, res) => {
+  try {
+    saveState(fizzChainState);
+    res.json({ success: true, height: fizzChainState.height, savedAt: new Date().toISOString() });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || String(err) });
   }
 });
