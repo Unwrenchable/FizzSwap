@@ -10,6 +10,7 @@
  * observer can verify who should have signed a given block.
  */
 
+import * as crypto from 'crypto';
 import { CONSENSUS_PARAMS } from './genesis';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -125,8 +126,10 @@ export class ValidatorRegistry {
     const totalStake = active.reduce((sum, v) => sum + v.stake, 0n);
     if (totalStake === 0n) return null;
 
-    // Deterministic seed derived from block height (no external randomness needed)
-    let cursor = BigInt(blockHeight) * 1_000_000_007n % totalStake;
+    // Deterministic seed: SHA-256(blockHeight) gives uniform distribution
+    // over the full stake range regardless of how large totalStake is.
+    const hashHex = crypto.createHash('sha256').update(String(blockHeight)).digest('hex');
+    let cursor = BigInt('0x' + hashHex) % totalStake;
 
     for (const v of active) {
       if (cursor < v.stake) return v;

@@ -40,6 +40,15 @@ import {
 } from './pow';
 import { ValidatorRegistry } from './pos';
 
+// Lazy imports to avoid circular dependencies and keep tests isolated
+let _events: typeof import('./events') | null = null;
+function getEvents() {
+  if (!_events) {
+    try { _events = require('./events'); } catch (_) { /* test environment */ }
+  }
+  return _events;
+}
+
 // ─── Transaction types ────────────────────────────────────────────────────────
 
 export type TxType = 'transfer' | 'swap' | 'stake' | 'unstake' | 'add_liquidity' | 'remove_liquidity' | 'bridge_in' | 'bridge_out';
@@ -255,6 +264,14 @@ export class FizzChainState {
       minedAt: new Date().toISOString(),
     };
     this.blocks.push(finalBlock);
+
+    // Emit real-time block event (non-blocking)
+    getEvents()?.fizzEvents.emitBlock({
+      block: finalBlock,
+      txCount: includedTxs.length,
+      miningMs: Date.now() - mined.timestamp,
+    });
+
     return finalBlock;
   }
 
@@ -310,6 +327,17 @@ export class FizzChainState {
       tokenOut,
       amountIn: amountIn,
       amountOut: amtOut.toString(),
+    });
+
+    // Emit real-time swap event
+    getEvents()?.fizzEvents.emitSwap({
+      from,
+      tokenIn,
+      tokenOut,
+      amountIn,
+      amountOut: amtOut.toString(),
+      txId: tx.id,
+      timestamp: tx.timestamp,
     });
 
     return { amountOut: amtOut, txId: tx.id };
@@ -463,6 +491,7 @@ export class FizzChainState {
       tokenIn: token,
       amountIn: amount,
     });
+    getEvents()?.fizzEvents.emitBridge({ direction: 'in', address: to, token, amount, externalChain: sourceChain, txId: tx.id, timestamp: tx.timestamp });
     return tx.id;
   }
 
@@ -476,6 +505,7 @@ export class FizzChainState {
       tokenIn: token,
       amountIn: amount,
     });
+    getEvents()?.fizzEvents.emitBridge({ direction: 'out', address: from, token, amount, externalChain: targetChain, txId: tx.id, timestamp: tx.timestamp });
     return tx.id;
   }
 
@@ -551,3 +581,12 @@ export class FizzChainState {
 
 /** Singleton chain state shared by all relayer endpoints. */
 export const fizzChainState = new FizzChainState();
+
+// Restore state from disk snapshot if one exists (survives relayer restarts).
+// We do this lazily after module load so tests can use FizzChainState directly
+// without triggering disk I/O.
+try {
+  const { loadSnapshot, restoreState } = require('./persist');
+  const snap = loadSnapshot();
+  if (snap) restoreState(fizzChainState, snap);
+} catch (_) { /* persist module may not exist in tests */ }

@@ -568,6 +568,20 @@ app.listen(PORT, () => {
   } catch (e) {
     console.warn('[Relayer] failed to start worker', e);
   }
+  // Start FizzChain auto-miner (respects FIZZ_CHAIN_AUTO_MINE env var)
+  try {
+    startAutoMiner();
+  } catch (e) {
+    console.warn('[FizzChain] failed to start auto-miner', e);
+  }
+  // Save state on clean shutdown (stop miner first to avoid race)
+  const shutdown = () => {
+    try { stopAutoMiner(); } catch (_) {}
+    try { saveState(fizzChainState); } catch (_) {}
+    process.exit(0);
+  };
+  process.on('SIGTERM', shutdown);
+  process.on('SIGINT',  shutdown);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -580,6 +594,9 @@ app.listen(PORT, () => {
 import { fizzChainState } from './fizz-chain/state';
 import { mine, computeMerkleRoot, verifyPoW } from './fizz-chain/pow';
 import { FIZZ_CHAIN_ID, CONSENSUS_PARAMS as FIZZ_CONSENSUS } from './fizz-chain/genesis';
+import { fizzEvents, EVENTS } from './fizz-chain/events';
+import { startAutoMiner, stopAutoMiner, isMinerRunning, getMinerConfig } from './fizz-chain/miner';
+import { saveState } from './fizz-chain/persist';
 
 /**
  * GET /fizz-chain/info
@@ -896,5 +913,101 @@ app.post('/fizz-chain/bridge-out', (req, res) => {
     return res.json({ success: true, txId });
   } catch (err: any) {
     return res.status(500).json({ error: err?.message || String(err) });
+  }
+});
+
+/**
+ * GET /fizz-chain/events
+ *
+ * Server-Sent Events (SSE) stream for real-time FizzChain notifications.
+ *
+ * Connect with:
+ *   const es = new EventSource('http://localhost:4001/fizz-chain/events');
+ *   es.addEventListener('block', e => console.log(JSON.parse(e.data)));
+ *   es.addEventListener('swap',  e => console.log(JSON.parse(e.data)));
+ *
+ * Event types: block | tx | swap | bridge | miner
+ *
+ * Clients receive a heartbeat comment every 15 s to keep the connection alive
+ * through proxies and load balancers.
+ */
+app.get('/fizz-chain/events', (req, res) => {
+  res.setHeader('Content-Type',  'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection',    'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no'); // disable nginx buffering
+  res.flushHeaders();
+
+  // Helper to send an SSE event
+  const send = (eventName: string, data: any) => {
+    res.write(`event: ${eventName}\ndata: ${JSON.stringify(data)}\n\n`);
+  };
+
+  // Send initial state so client is immediately useful
+  send('info', fizzChainState.chainInfo());
+
+  // Subscribe to all FizzChain events
+  const onBlock  = (p: any) => send(EVENTS.BLOCK,  p);
+  const onTx     = (p: any) => send(EVENTS.TX,     p);
+  const onSwap   = (p: any) => send(EVENTS.SWAP,   p);
+  const onBridge = (p: any) => send(EVENTS.BRIDGE, p);
+  const onMiner  = (p: any) => send(EVENTS.MINER,  p);
+
+  fizzEvents.on(EVENTS.BLOCK,  onBlock);
+  fizzEvents.on(EVENTS.TX,     onTx);
+  fizzEvents.on(EVENTS.SWAP,   onSwap);
+  fizzEvents.on(EVENTS.BRIDGE, onBridge);
+  fizzEvents.on(EVENTS.MINER,  onMiner);
+
+  // Heartbeat every 15 s
+  const heartbeat = setInterval(() => { res.write(':heartbeat\n\n'); }, 15_000);
+
+  // Cleanup on disconnect
+  req.on('close', () => {
+    clearInterval(heartbeat);
+    fizzEvents.off(EVENTS.BLOCK,  onBlock);
+    fizzEvents.off(EVENTS.TX,     onTx);
+    fizzEvents.off(EVENTS.SWAP,   onSwap);
+    fizzEvents.off(EVENTS.BRIDGE, onBridge);
+    fizzEvents.off(EVENTS.MINER,  onMiner);
+  });
+});
+
+/**
+ * GET /fizz-chain/miner
+ * Returns the current auto-miner configuration and status.
+ */
+app.get('/fizz-chain/miner', (_req, res) => {
+  res.json(getMinerConfig());
+});
+
+/**
+ * POST /fizz-chain/miner/start
+ * Start the auto-miner (if stopped).
+ */
+app.post('/fizz-chain/miner/start', (_req, res) => {
+  startAutoMiner();
+  res.json({ success: true, running: isMinerRunning(), config: getMinerConfig() });
+});
+
+/**
+ * POST /fizz-chain/miner/stop
+ * Stop the auto-miner.
+ */
+app.post('/fizz-chain/miner/stop', (_req, res) => {
+  stopAutoMiner();
+  res.json({ success: true, running: isMinerRunning() });
+});
+
+/**
+ * POST /fizz-chain/snapshot
+ * Force-save the current chain state to disk immediately.
+ */
+app.post('/fizz-chain/snapshot', (_req, res) => {
+  try {
+    saveState(fizzChainState);
+    res.json({ success: true, height: fizzChainState.height, savedAt: new Date().toISOString() });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || String(err) });
   }
 });

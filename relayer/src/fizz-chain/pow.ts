@@ -97,7 +97,7 @@ export function computeMerkleRoot(transactions: string[]): string {
 export function mine(
   header: Omit<BlockHeader, 'nonce'>,
   startNonce = 0,
-  maxNonce = CONSENSUS_PARAMS.maxNonce
+  maxNonce: number = CONSENSUS_PARAMS.maxNonce
 ): MinedBlock | null {
   for (let nonce = startNonce; nonce <= startNonce + maxNonce; nonce++) {
     const candidate: BlockHeader = { ...header, nonce };
