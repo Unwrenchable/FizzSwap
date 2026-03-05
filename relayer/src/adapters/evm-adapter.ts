@@ -116,8 +116,13 @@ export class EvmAdapter implements IChainAdapter {
       outputToken: this.formatTokenInfo(outputToken),
       inputAmount: amount.toString(),
       outputAmount: amountOut.toString(),
-      priceImpact: 0,
-      fee: '0',
+      priceImpact: reserveIn > 0n && reserveOut > 0n
+        ? (() => {
+            const spotOut = (amountIn * reserveOut) / reserveIn;
+            return spotOut > 0n ? Math.max(0, Number((spotOut - amountOut) * 10000n / spotOut) / 100) : 0;
+          })()
+        : 0,
+      fee: (amountIn * 3n / 1000n).toString(),
       route: [this.config.chainId],
       estimatedGas: '0'
     };

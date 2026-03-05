@@ -20,12 +20,18 @@ const FIZZDEX_ABI = [
 
 const FIZZDEX_FULL_ABI = [
   ...FIZZDEX_ABI,
+  "function pools(bytes32) view returns (address tokenA, address tokenB, uint256 reserveA, uint256 reserveB, uint256 totalShares)",
   "function addLiquidity(address,address,uint256,uint256) returns (uint256)",
   "function removeLiquidity(address,address,uint256) returns (uint256,uint256)",
   "function swap(address,address,uint256,uint256) returns (uint256)",
   "function playFizzCaps(uint256)",
   "function claimRewards()",
   "function getPlayerStats(address) view returns (uint256,uint256,uint256,uint256,uint256)",
+];
+
+const ERC20_APPROVE_ABI = [
+  "function approve(address spender, uint256 amount) returns (bool)",
+  "function allowance(address owner, address spender) view returns (uint256)",
 ];
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -47,6 +53,13 @@ function fizzBuzzPreview(n: number): FizzResult {
   if (n % 3  === 0) return { label: "Fizz",     reward: "10", color: "#4eff91", badgeClass: "badge-fizz",     bigClass: "fizz"     };
   if (n % 5  === 0) return { label: "Buzz",     reward: "15", color: "#ff6b6b", badgeClass: "badge-buzz",     bigClass: "buzz"     };
   return              { label: "—",         reward: "—",  color: "#8a9e8d", badgeClass: "badge-miss",     bigClass: "miss"     };
+}
+
+/** Compute first 8 bytes of SHA-256("global:<name>") as an Anchor discriminator. */
+async function anchorDisc(name: string): Promise<Buffer> {
+  const encoded = new TextEncoder().encode(`global:${name}`);
+  const hashBuf = await crypto.subtle.digest("SHA-256", encoded);
+  return Buffer.from(hashBuf).slice(0, 8);
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -95,6 +108,7 @@ export default function App() {
   const [showAdvanced, setShowAdvanced] = useState<boolean>(false);
   const [swapChain,    setSwapChain]    = useState<"evm" | "solana">("evm");
   const [isSwapping,   setIsSwapping]   = useState<boolean>(false);
+  const [slippageBps,  setSlippageBps]  = useState<number>(100); // 100 bps = 1.0%
 
   // ── Pool tab ─────────────────────────────────────────────────────────────
   const [tokenAAddr,    setTokenAAddr]    = useState<string>("");
@@ -189,8 +203,39 @@ export default function App() {
     try {
       const contract = new ethers.Contract(fizzDexAddr, FIZZDEX_FULL_ABI, signer);
       const amtIn = ethers.parseEther(amount);
-      const minOut = 0n; // TODO: slippage
-      addLog(`Swapping ${amount} of ${shortAddr(tokenAddr)} → ${shortAddr(outputToken)}…`);
+
+      // Compute pool-based minOut with slippage protection
+      let minOut = 0n;
+      try {
+        // derive pool id (keccak256(abi.encodePacked(sortedAddr0, sortedAddr1)))
+        const [t0, t1] = tokenAddr.toLowerCase() < outputToken.toLowerCase()
+          ? [tokenAddr, outputToken] : [outputToken, tokenAddr];
+        const poolId = ethers.keccak256(ethers.solidityPacked(['address', 'address'], [t0, t1]));
+        const pool = await contract.pools(poolId);
+        const isTokenA = tokenAddr.toLowerCase() === (pool[0] as string).toLowerCase();
+        const reserveIn  = isTokenA ? BigInt(pool[2].toString()) : BigInt(pool[3].toString());
+        const reserveOut = isTokenA ? BigInt(pool[3].toString()) : BigInt(pool[2].toString());
+        if (reserveIn > 0n && reserveOut > 0n) {
+          const amtInWithFee = amtIn * 997n;
+          const expectedOut = (amtInWithFee * reserveOut) / (reserveIn * 1000n + amtInWithFee);
+          // apply slippage: minOut = expectedOut * (10000 - slippageBps) / 10000
+          minOut = (expectedOut * BigInt(10000 - slippageBps)) / 10000n;
+        }
+      } catch (quoteErr: any) {
+        addLog(`Quote lookup failed (proceeding without minOut): ${quoteErr?.message || String(quoteErr)}`);
+      }
+
+      // Approve token spend before swap (only if current allowance is insufficient)
+      const erc20 = new ethers.Contract(tokenAddr, ERC20_APPROVE_ABI, signer);
+      const signerAddr = await signer.getAddress();
+      const currentAllowance = await erc20.allowance(signerAddr, fizzDexAddr);
+      if (BigInt(currentAllowance.toString()) < amtIn) {
+        addLog(`Approving ${amount} of ${shortAddr(tokenAddr)} for FizzDex…`);
+        const approveTx = await erc20.approve(fizzDexAddr, amtIn);
+        await approveTx.wait();
+      }
+
+      addLog(`Swapping ${amount} of ${shortAddr(tokenAddr)} → ${shortAddr(outputToken)} (minOut=${ethers.formatEther(minOut)})…`);
       const tx = await contract.swap(tokenAddr, outputToken, amtIn, minOut);
       addLog(`Swap tx: ${tx.hash}`);
       await tx.wait();
@@ -364,8 +409,7 @@ export default function App() {
       { pubkey: SYSVAR_RENT_PUBKEY,        isSigner: false, isWritable: false },
     ];
 
-    const crypto = require("crypto");
-    const disc   = Buffer.from(crypto.createHash("sha256").update("global:initiate_atomic_swap").digest().slice(0, 8));
+    const disc   = await anchorDisc("initiate_atomic_swap");
     const amtBuf = Buffer.alloc(8);
     amtBuf.writeBigUInt64LE(amtU64);
     const tlBuf2 = Buffer.alloc(8);
@@ -434,8 +478,7 @@ export default function App() {
       const mintPk         = new PublicKey(solanaMint || "So11111111111111111111111111111111111111112");
       const participantAta = await getAssociatedTokenAddress(mintPk, participantPub);
 
-      const crypto    = require("crypto");
-      const disc      = Buffer.from(crypto.createHash("sha256").update("global:complete_atomic_swap").digest().slice(0, 8));
+      const disc      = await anchorDisc("complete_atomic_swap");
       const secretBuf = Buffer.from(secret);
       const lenBuf    = Buffer.alloc(4);
       lenBuf.writeUInt32LE(secretBuf.length);
@@ -492,8 +535,7 @@ export default function App() {
           const ix = tx.transaction.message.instructions.find((i: any) => i.data && i.data.length > 16);
           if (!ix) continue;
           const data   = Buffer.from((ix as any).data, "base64");
-          const crypto = require("crypto");
-          const disc   = crypto.createHash("sha256").update("global:complete_atomic_swap").digest().slice(0, 8);
+          const disc   = await anchorDisc("complete_atomic_swap");
           if (data.slice(0, 8).equals(disc)) {
             const len       = data.readUInt32LE(8);
             const secretStr = data.slice(12, 12 + len).toString();
@@ -793,7 +835,7 @@ export default function App() {
                 </div>
                 <div className="info-row" style={{ paddingTop: 0, borderTop: "none" }}>
                   <span>Slippage tolerance</span>
-                  <span className="info-val">1.0%</span>
+                  <span className="info-val">{(slippageBps / 100).toFixed(1)}%</span>
                 </div>
 
                 {/* Advanced section */}
@@ -809,6 +851,32 @@ export default function App() {
 
                 {showAdvanced && (
                   <div style={{ marginTop: 10 }}>
+                    <div className="field-group">
+                      <label className="field-label" htmlFor="swap-slippage">Slippage Tolerance</label>
+                      <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                        {[50, 100, 200].map((bps) => (
+                          <button
+                            key={bps}
+                            className={`btn-outline${slippageBps === bps ? " active-evm" : ""}`}
+                            style={{ flex: 1, padding: "4px 0" }}
+                            onClick={() => setSlippageBps(bps)}
+                          >{(bps / 100).toFixed(1)}%</button>
+                        ))}
+                        <input
+                          id="swap-slippage"
+                          type="number"
+                          className="field-input"
+                          style={{ width: 80, flex: "none" }}
+                          min={1}
+                          max={5000}
+                          step={10}
+                          value={slippageBps}
+                          onChange={(e) => setSlippageBps(Math.max(1, Math.min(5000, Number(e.target.value))))}
+                          aria-label="Custom slippage in basis points"
+                        />
+                        <span style={{ whiteSpace: "nowrap", fontSize: 12 }}>bps</span>
+                      </div>
+                    </div>
                     <div className="field-group">
                       <label className="field-label" htmlFor="swap-fizzdex">FizzDex Contract</label>
                       <input
