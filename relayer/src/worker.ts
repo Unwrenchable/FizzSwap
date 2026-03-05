@@ -4,6 +4,7 @@ import { ethers } from 'ethers';
 import completeSolanaHTLCWrapper from './solana-htlc';
 
 const MAPPINGS_FILE = path.join(process.cwd(), 'relayer-mappings.json');
+const CHECKPOINT_FILE = path.join(process.cwd(), 'relayer-block-checkpoint.json');
 const POLL_INTERVAL_MS = Number(process.env.RELAYER_WORKER_POLL_MS || '30000');
 const EVM_RPC = process.env.EVM_RPC || 'http://localhost:8545';
 const FIZZDEX = process.env.FIZZDEX_ADDRESS || '';
@@ -65,13 +66,36 @@ function saveMappings(m: Record<string, any>) {
   }
 }
 
-async function tryCompleteForSwap(provider: ethers.JsonRpcProvider, swapIdHex: string, mapEntry: any) {
+function loadCheckpoint(): number {
+  try {
+    if (fs.existsSync(CHECKPOINT_FILE)) {
+      const raw = fs.readFileSync(CHECKPOINT_FILE, 'utf8');
+      const data = JSON.parse(raw);
+      return typeof data.lastBlock === 'number' ? data.lastBlock : 0;
+    }
+  } catch (e) {
+    // ignore
+  }
+  return 0;
+}
+
+function saveCheckpoint(blockNumber: number) {
+  try {
+    fs.writeFileSync(CHECKPOINT_FILE, JSON.stringify({ lastBlock: blockNumber }), 'utf8');
+    try { fs.chmodSync(CHECKPOINT_FILE, 0o600); } catch (e) { }
+  } catch (e) {
+    const ex = e as any;
+    console.warn('[Worker] failed to save block checkpoint', ex?.message || String(ex));
+  }
+}
+
+async function tryCompleteForSwap(provider: ethers.JsonRpcProvider, swapIdHex: string, mapEntry: any, fromBlock: number) {
   const iface = new ethers.Interface(["function completeAtomicSwap(bytes32,bytes)"]);
   const topicSwapId = swapIdHex.startsWith('0x') ? swapIdHex : '0x'+swapIdHex;
   try {
     const logs = await provider.getLogs({
       address: FIZZDEX,
-      fromBlock: 0,
+      fromBlock,
       toBlock: 'latest'
     });
     for (const l of logs) {
@@ -102,11 +126,22 @@ async function tryCompleteForSwap(provider: ethers.JsonRpcProvider, swapIdHex: s
 export function startWorker() {
   const provider = new ethers.JsonRpcProvider(EVM_RPC);
   setInterval(async () => {
+    // Load checkpoint: only scan blocks we haven't seen yet
+    const fromBlock = loadCheckpoint();
+    let latestBlock = fromBlock;
+    try {
+      latestBlock = await provider.getBlockNumber();
+    } catch (e) {
+      const ex = e as any;
+      console.warn('[Worker] could not fetch latest block number', ex?.message || String(ex));
+      return;
+    }
+
     const mappings = loadMappings();
     for (const swapId of Object.keys(mappings)) {
       const entry = mappings[swapId];
       try {
-        const ok = await tryCompleteForSwap(provider, swapId, entry);
+        const ok = await tryCompleteForSwap(provider, swapId, entry, fromBlock);
         if (ok) {
           delete mappings[swapId];
           saveMappings(mappings);
@@ -115,6 +150,11 @@ export function startWorker() {
         const ex = e as any;
         console.warn('[Worker] error processing mapping', swapId, ex?.message || String(ex));
       }
+    }
+
+    // Advance checkpoint to the latest block scanned
+    if (latestBlock > fromBlock) {
+      saveCheckpoint(latestBlock);
     }
   }, POLL_INTERVAL_MS);
   console.log('[Worker] started, polling every', POLL_INTERVAL_MS, 'ms');

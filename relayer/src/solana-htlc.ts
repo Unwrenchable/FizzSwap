@@ -1,5 +1,9 @@
 import { Connection, Keypair, PublicKey, Transaction, sendAndConfirmTransaction } from "@solana/web3.js";
-import { getAssociatedTokenAddress } from "@solana/spl-token";
+import {
+  getAssociatedTokenAddress,
+  getAccount,
+  createAssociatedTokenAccountInstruction,
+} from "@solana/spl-token";
 
 export async function completeSolanaHTLCWrapper(SOLANA_RPC: string, SOLANA_PROGRAM_ID: string, keypairJson: string, atomicSwapPda: string, escrowVaultPda: string, tokenMint: string, secret: string) {
   if (!keypairJson) throw new Error('RELAYER_SOLANA_KEYPAIR not configured');
@@ -29,9 +33,23 @@ export async function completeSolanaHTLCWrapper(SOLANA_RPC: string, SOLANA_PROGR
     { pubkey: new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'), isSigner: false, isWritable: false },
   ];
 
-  const ix = new Transaction().add({ keys, programId, data } as any);
-  const txSig = await conn.sendTransaction(ix, [payer]);
-  await conn.confirmTransaction(txSig, 'confirmed');
+  const tx = new Transaction();
+
+  // Auto-create the participant's ATA if it doesn't exist yet.
+  // The relayer keypair (payer) funds the ATA creation since it is the transaction signer.
+  try {
+    await getAccount(conn, participantAta, 'confirmed');
+  } catch {
+    tx.add(createAssociatedTokenAccountInstruction(
+      payer.publicKey, // fee payer for ATA creation
+      participantAta,  // ata address
+      participant,     // owner of the ata (same as payer in relayer context)
+      mintPk,          // token mint
+    ));
+  }
+
+  tx.add({ keys, programId, data } as any);
+  const txSig = await sendAndConfirmTransaction(conn, tx, [payer], { commitment: 'confirmed' });
   return txSig;
 }
 

@@ -1,4 +1,5 @@
-import { Connection, Keypair, PublicKey, sendAndConfirmTransaction, Transaction, TransactionInstruction } from "@solana/web3.js";
+import { Connection, Keypair, PublicKey, sendAndConfirmTransaction, SystemProgram, Transaction, TransactionInstruction } from "@solana/web3.js";
+import { getAssociatedTokenAddress } from "@solana/spl-token";
 import {
   ChainConfig,
   IChainAdapter,
@@ -6,6 +7,7 @@ import {
   TokenInfo,
   TransactionResult,
 } from "../chain-adapter";
+import { completeSolanaHTLCWrapper } from "../solana-htlc";
 
 export class SolanaAdapter implements IChainAdapter {
   private config: ChainConfig;
@@ -95,8 +97,13 @@ export class SolanaAdapter implements IChainAdapter {
         outputToken: { address: outputToken, symbol: 'SPL', name: 'SPL Token', decimals: pool.decimalsB || 9 },
         inputAmount: amount.toString(),
         outputAmount: amountOut.toString(),
-        priceImpact: 0,
-        fee: '0',
+        priceImpact: reserveIn > 0n && reserveOut > 0n
+          ? (() => {
+              const spotOut = (amountIn * reserveOut) / reserveIn;
+              return spotOut > 0n ? Math.max(0, Number((spotOut - amountOut) * 10000n / spotOut) / 100) : 0;
+            })()
+          : 0,
+        fee: (amountIn * 3n / 1000n).toString(),
         route: [this.config.chainId],
         estimatedGas: '0'
       };
@@ -134,13 +141,19 @@ export class SolanaAdapter implements IChainAdapter {
     const denominator = reserveIn * 1000n + amountInWithFee;
     const amountOut = numerator / denominator;
 
+    // price impact: how much the trade moves the price vs. the spot rate
+    const spotOut = reserveOut > 0n ? (amountIn * reserveOut) / reserveIn : 0n;
+    const priceImpact = spotOut > 0n
+      ? Math.max(0, Number((spotOut - amountOut) * 10000n / spotOut) / 100)
+      : 0;
+
     const quote: SwapQuote = {
       inputToken: { address: inputToken, symbol: 'SPL', name: 'SPL Token', decimals: 9 },
       outputToken: { address: outputToken, symbol: 'SPL', name: 'SPL Token', decimals: 9 },
       inputAmount: amount.toString(),
       outputAmount: amountOut.toString(),
-      priceImpact: 0,
-      fee: '0',
+      priceImpact,
+      fee: (amountIn * 3n / 1000n).toString(),
       route: [this.config.chainId],
       estimatedGas: '0'
     };
@@ -251,11 +264,98 @@ export class SolanaAdapter implements IChainAdapter {
   }
 
   async initiateBridge(targetChain: string, token: string, amount: string, recipientAddress: string): Promise<TransactionResult> {
-    throw new Error('initiateBridge not implemented for Solana adapter');
+    if (!this.keypair) throw new Error('No keypair configured for Solana adapter');
+    const cfg: any = this.config as any;
+    const programId = new PublicKey(cfg.swapProgramId || process.env.SOLANA_SWAP_PROGRAM_ID || process.env.SOLANA_PROGRAM_ID || '');
+
+    // Generate a 32-byte secret hash for the HTLC
+    const crypto = require('crypto');
+    const secretBytes = crypto.randomBytes(32);
+    const secretHash = crypto.createHash('sha256').update(secretBytes).digest();
+
+    const initiator = this.keypair.publicKey;
+    const participantPk = new PublicKey(recipientAddress);
+    const mintPk = new PublicKey(token);
+    const amountU64 = BigInt(amount);
+    const timelockI64 = BigInt(Math.floor(Date.now() / 1000) + 3600);
+
+    const timelockBuf = Buffer.alloc(8);
+    timelockBuf.writeBigInt64LE(timelockI64);
+
+    const [atomicSwapPda] = await PublicKey.findProgramAddress([
+      Buffer.from('atomic_swap'),
+      initiator.toBuffer(),
+      participantPk.toBuffer(),
+      mintPk.toBuffer(),
+      timelockBuf,
+    ], programId);
+
+    const [escrowVaultPda] = await PublicKey.findProgramAddress([
+      Buffer.from('escrow_vault'),
+      initiator.toBuffer(),
+      participantPk.toBuffer(),
+      mintPk.toBuffer(),
+      timelockBuf,
+    ], programId);
+
+    const initiatorAta = await getAssociatedTokenAddress(mintPk, initiator);
+
+    const disc = crypto.createHash('sha256').update('global:initiate_atomic_swap').digest().slice(0, 8);
+    const amtBuf = Buffer.alloc(8);
+    amtBuf.writeBigUInt64LE(amountU64);
+    const data = Buffer.concat([Buffer.from(disc), amtBuf, Buffer.from(secretHash), timelockBuf]);
+
+    const keys = [
+      { pubkey: initiator,          isSigner: true,  isWritable: true  },
+      { pubkey: participantPk,      isSigner: false, isWritable: false },
+      { pubkey: mintPk,             isSigner: false, isWritable: false },
+      { pubkey: initiatorAta,       isSigner: false, isWritable: true  },
+      { pubkey: escrowVaultPda,     isSigner: false, isWritable: true  },
+      { pubkey: atomicSwapPda,      isSigner: false, isWritable: true  },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+      { pubkey: new PublicKey('SysvarRent111111111111111111111111111111111'), isSigner: false, isWritable: false },
+    ];
+
+    const tx = new Transaction().add(new TransactionInstruction({ keys, programId, data }));
+    tx.feePayer = initiator;
+    const { blockhash } = await this.connection.getLatestBlockhash('finalized');
+    tx.recentBlockhash = blockhash;
+
+    try {
+      const sig = await sendAndConfirmTransaction(this.connection, tx, [this.keypair], { commitment: 'confirmed' });
+      return {
+        hash: sig,
+        success: true,
+        meta: {
+          atomicSwapPda: atomicSwapPda.toBase58(),
+          escrowVaultPda: escrowVaultPda.toBase58(),
+          // secretHash is the SHA-256 of secretBytes (hex). The recipient needs the plaintext
+          // secretBytes to claim funds on the target chain. Callers must receive secretBytes
+          // through a separate secure channel (e.g., encrypted message or out-of-band delivery).
+          secretHash: secretHash.toString('hex'),
+          timelock: timelockI64.toString(),
+        },
+      };
+    } catch (err: any) {
+      return { hash: '', success: false, error: err?.message || String(err) };
+    }
   }
 
   async completeBridge(bridgeId: string, proof: string): Promise<TransactionResult> {
-    throw new Error('completeBridge not implemented for Solana adapter');
+    // bridgeId is expected as "atomicSwapPda:escrowVaultPda:tokenMint"
+    const parts = bridgeId.split(':');
+    if (parts.length < 3) throw new Error('bridgeId must be "atomicSwapPda:escrowVaultPda:tokenMint"');
+    const [atomicSwapPda, escrowVaultPda, tokenMint] = parts;
+    const solanaRpc = this.config.rpcUrl;
+    const programId = (this.config as any).swapProgramId || process.env.SOLANA_SWAP_PROGRAM_ID || process.env.SOLANA_PROGRAM_ID || '';
+    const keypairJson = process.env.RELAYER_SOLANA_KEYPAIR;
+    if (!keypairJson) throw new Error('RELAYER_SOLANA_KEYPAIR not configured');
+    try {
+      const txSig = await completeSolanaHTLCWrapper(solanaRpc, programId, keypairJson, atomicSwapPda, escrowVaultPda, tokenMint, proof);
+      return { hash: txSig, success: true };
+    } catch (err: any) {
+      return { hash: '', success: false, error: err?.message || String(err) };
+    }
   }
 
   async signMessage(message: string): Promise<string> {
