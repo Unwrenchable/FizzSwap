@@ -19,7 +19,7 @@
     "dotenv": "^16.3.1",
     "ecpair": "^3.0.1",
     "ethers": "^6.17.0",
-    "express": "^4.22.2",
+    "express": "^4.22.3",
     "tiny-secp256k1": "^2.2.4"
   },
   "devDependencies": {
